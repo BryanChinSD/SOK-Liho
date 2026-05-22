@@ -1,0 +1,720 @@
+﻿/* ============================================
+   VOUCHER MODAL - MULTI-COLUMN GRID LAYOUT
+============================================ */
+
+/* Modal Overlay */
+.fullscreen-vouchers-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 10000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+    pointer-events: auto;
+}
+
+    .fullscreen-vouchers-modal.active {
+        display: flex;
+    }
+
+/* Modal Container - Fixed Height */
+.fullscreen-vouchers-content {
+    background: white;
+    border-radius: 20px;
+    width: 100%;
+    max-width: min(1200px, calc(100vw - 40px));
+    height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    animation: modalSlideUp 0.3s ease;
+    pointer-events: auto;
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+}
+
+@keyframes modalSlideUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Modal Header */
+.vouchers-modal-header {
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-hover) 100%);
+    padding: 24px 32px;
+    position: relative;
+    flex-shrink: 0;
+}
+
+    .vouchers-modal-header h2 {
+        color: white;
+        font-size: 24px;
+        font-weight: 700;
+        margin: 0 0 16px 0;
+    }
+
+/* Close Button */
+.close-vouchers-btn {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: white;
+    font-size: 28px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+    .close-vouchers-btn:hover {
+        background: rgba(255, 255, 255, 0.3);
+        transform: rotate(90deg);
+    }
+
+/* Filter Tabs */
+.voucher-filters {
+    display: flex;
+    gap: 10px;
+}
+
+.voucher-filter-btn {
+    flex: 1;
+    padding: 15px 16px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.9);
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+    .voucher-filter-btn:hover {
+        background: rgba(255, 255, 255, 0.25);
+        border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .voucher-filter-btn.active {
+        background: white;
+        color: var(--primary);
+        border-color: white;
+    }
+
+/* ============================================
+   VOUCHERS GRID - MULTI-COLUMN LAYOUT
+============================================ */
+.fullscreen-vouchers-grid {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 24px;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    background: #f9fafb;
+    align-content: start;
+    align-items: stretch; /* ✅ add this */
+    box-sizing: border-box;
+    width: 100%;
+}
+
+/* Large screens - 3 columns */
+@media (min-width: 1400px) {
+    .fullscreen-vouchers-content {
+        max-width: min(1400px, calc(100vw - 40px));
+        height: 85vh;
+    }
+
+    .fullscreen-vouchers-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+/* Medium-large screens - 2 columns */
+@media (min-width: 900px) and (max-width: 1399px) {
+    .fullscreen-vouchers-content {
+        max-width: min(1200px, calc(100vw - 40px));
+        height: 85vh;
+    }
+
+    .fullscreen-vouchers-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* Scrollbar styling */
+.fullscreen-vouchers-grid::-webkit-scrollbar {
+    width: 10px;
+}
+
+.fullscreen-vouchers-grid::-webkit-scrollbar-track {
+    background: #e5e7eb;
+    border-radius: 10px;
+}
+
+.fullscreen-vouchers-grid::-webkit-scrollbar-thumb {
+    background: var(--primary);
+    border-radius: 10px;
+    border: 2px solid #f9fafb;
+}
+
+    .fullscreen-vouchers-grid::-webkit-scrollbar-thumb:hover {
+        background: var(--primary-hover);
+    }
+
+/* ============================================
+   VOUCHER CARD - OPTIMIZED FOR GRID
+============================================ */
+.voucher-card-full {
+    background: white;
+    border: 2px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    transition: all 0.2s ease;
+    opacity: 1 !important;
+    animation: cardFadeIn 0.3s ease forwards;
+    height: 100%; /* ✅ stretch to row height */
+    pointer-events: auto;
+    position: relative;
+    box-sizing: border-box;
+    min-width: 0;
+}
+
+@keyframes cardFadeIn {
+    to {
+        opacity: 1;
+    }
+}
+
+.voucher-card-full:hover {
+    border-color: var(--primary);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    transform: translateY(-4px);
+}
+
+.voucher-card-full.applied {
+    border-color: #10b981;
+    background: linear-gradient(to bottom, #f0fdf4, white);
+}
+
+/* Card Header */
+.voucher-card-header {
+    display: flex;
+    gap: 14px;
+    min-width: 0;
+}
+
+/* Voucher Icon */
+.voucher-icon-wrapper {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.voucher-image-large {
+    width: 72px;
+    height: 72px;
+    border-radius: 12px;
+    object-fit: cover;
+    border: 2px solid #e5e7eb;
+}
+
+.voucher-placeholder-large {
+    width: 72px;
+    height: 72px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #fbbf24, #f59e0b) !important;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    flex-shrink: 0;
+}
+
+    .voucher-placeholder-large svg {
+        width: 36px;
+        height: 36px;
+    }
+
+.voucher-check-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #10b981;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4);
+}
+
+/* Card Info */
+.voucher-info-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0; /* ✅ Prevents text overflow breaking layout */
+    overflow: hidden;
+}
+
+.voucher-type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-weight: 700;
+    width: fit-content;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+    .voucher-type-badge.issued {
+        background: #dbeafe;
+        color: #1e40af;
+    }
+
+    .voucher-type-badge.catalog {
+        background: #fef3c7;
+        color: #92400e;
+    }
+
+.voucher-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #111827;
+    line-height: 1.3;
+    margin: 0;
+    display: -webkit-box !important;
+    visibility: visible !important;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+}
+
+.voucher-discount-badge {
+    display: inline-flex;
+    padding: 6px 12px;
+    background: linear-gradient(135deg, #fbbf24, #f59e0b);
+    color: white;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    width: fit-content;
+    flex-shrink: 0;
+}
+
+/* Expiry Info */
+.voucher-expiry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #f3f4f6;
+    border-radius: 8px;
+    font-size: 12px;
+    color: #6b7280;
+    box-sizing: border-box;
+}
+
+    .voucher-expiry.urgent {
+        background: #fef2f2;
+        color: #dc2626;
+    }
+
+    .voucher-expiry svg {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+    }
+
+/* Action Buttons */
+.voucher-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+}
+
+.voucher-btn {
+    flex: 1;
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 700;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    pointer-events: auto;
+    position: relative;
+    z-index: 10;
+    box-sizing: border-box;
+}
+
+    .voucher-btn.voucher-apply {
+        background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+        color: white;
+    }
+
+        .voucher-btn.voucher-apply:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+    .voucher-btn.voucher-applied {
+        background: #10b981;
+        color: white;
+        cursor: default;
+    }
+
+    .voucher-btn.voucher-remove {
+        flex: 0 0 auto;
+        width: 44px;
+        padding: 0;
+        background: #ef4444;
+        color: white;
+        font-size: 18px;
+        pointer-events: auto;
+        z-index: 10;
+    }
+
+        .voucher-btn.voucher-remove:hover:not(:disabled) {
+            background: #dc2626;
+        }
+
+    .voucher-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+/* Loading Spinner */
+.btn-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* No Vouchers State */
+.no-vouchers {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: #9ca3af;
+}
+
+.no-vouchers-icon {
+    font-size: 64px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.no-vouchers p {
+    font-size: 16px;
+    margin: 0;
+}
+
+/* ============================================
+   TABLET RESPONSIVE
+============================================ */
+@media (max-width: 899px) {
+    .fullscreen-vouchers-content {
+        max-width: min(700px, calc(100vw - 40px));
+        height: 85vh;
+    }
+
+    .fullscreen-vouchers-grid {
+        grid-template-columns: 1fr;
+        padding: 20px;
+        gap: 16px;
+    }
+
+    .vouchers-modal-header {
+        padding: 20px 24px;
+    }
+
+        .vouchers-modal-header h2 {
+            font-size: 22px;
+        }
+}
+
+/* ============================================
+   MOBILE RESPONSIVE
+============================================ */
+@media (max-width: 768px) {
+    .fullscreen-vouchers-modal {
+        padding: 0;
+        align-items: flex-end;
+    }
+
+    .fullscreen-vouchers-content {
+        max-width: 100%;
+        height: 92vh;
+        max-height: 92vh;
+        border-radius: 20px 20px 0 0;
+    }
+
+    .vouchers-modal-header {
+        padding: 20px;
+    }
+
+        .vouchers-modal-header h2 {
+            font-size: 20px;
+            margin-bottom: 12px;
+        }
+
+    .close-vouchers-btn {
+        top: 20px;
+        right: 20px;
+        width: 36px;
+        height: 36px;
+        font-size: 24px;
+    }
+
+    .voucher-filter-btn {
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+
+    .fullscreen-vouchers-grid {
+        grid-template-columns: 1fr;
+        padding: 16px;
+        gap: 12px;
+    }
+
+    .voucher-card-full {
+        padding: 16px;
+    }
+
+    .voucher-image-large,
+    .voucher-placeholder-large {
+        width: 64px;
+        height: 64px;
+    }
+
+    .voucher-name {
+        font-size: 14px;
+    }
+
+    .voucher-discount-badge {
+        font-size: 12px;
+        padding: 5px 10px;
+    }
+
+    .voucher-btn {
+        padding: 10px 16px;
+        font-size: 12px;
+    }
+}
+
+@media (max-width: 480px) {
+    .fullscreen-vouchers-grid {
+        padding: 12px;
+        gap: 10px;
+    }
+
+    .voucher-card-full {
+        padding: 14px;
+    }
+
+    .voucher-image-large,
+    .voucher-placeholder-large {
+        width: 56px;
+        height: 56px;
+    }
+
+    .voucher-name {
+        font-size: 13px;
+    }
+}
+
+/* ============================================
+   ELIGIBILITY BADGES
+============================================ */
+.voucher-eligibility-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 5px 0 3px;
+}
+
+.voucher-info-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 7px;
+    border-radius: 10px;
+    white-space: nowrap;
+    line-height: 1.5;
+}
+
+.voucher-info-type {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
+}
+
+.voucher-info-savings {
+    background: #ecfdf5;
+    color: #065f46;
+    border: 1px solid #6ee7b7;
+}
+
+.voucher-info-include {
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+.voucher-info-exclude {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.voucher-info-min {
+    background: #eff6ff;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+}
+
+.voucher-info-points {
+    background: #fdf4ff;
+    color: #7e22ce;
+    border: 1px solid #e9d5ff;
+}
+
+.voucher-card-skeleton {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 12px;
+    min-height: 140px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid #f0f0f0;
+}
+
+    .voucher-card-skeleton::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient( 90deg, transparent 0%, rgba(255, 255, 255, 0.7) 50%, transparent 100% );
+        background-size: 200% 100%;
+        animation: shimmer-wave 1.4s infinite ease-in-out;
+    }
+
+.skeleton-header {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.skeleton-image {
+    width: 64px;
+    height: 64px;
+    border-radius: 10px;
+    background: #e8e8e8;
+    flex-shrink: 0;
+}
+
+.skeleton-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    justify-content: center;
+}
+
+.skeleton-text {
+    height: 13px;
+    border-radius: 6px;
+    background: #e8e8e8;
+}
+
+    .skeleton-text.title {
+        width: 65%;
+        height: 17px;
+    }
+
+    .skeleton-text.code {
+        width: 40%;
+    }
+
+    .skeleton-text.discount {
+        width: 28%;
+        height: 22px;
+        border-radius: 20px;
+    }
+
+    .skeleton-text.quantity {
+        width: 50%;
+    }
+
+    .skeleton-text.expiry {
+        width: 45%;
+        margin-bottom: 10px;
+    }
+
+.skeleton-details {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+@keyframes shimmer-wave {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}

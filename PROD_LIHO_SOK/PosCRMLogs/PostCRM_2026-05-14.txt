@@ -1,0 +1,180 @@
+﻿==========================================================
+Timestamp : 2026-05-14 09:03:18 (Local) | 2026-05-14 01:03:18 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140001
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140001","TransactDate":"2026-05-14 01:03:16","OriginalDate":null,"TransactTime":"01:03:16","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"7AD4B776DA701688BE4C18A775A1048D51433873","data":{"ValueKind":1},"timestamp":"2026-05-14T01:03:18.1605748Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140001"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 09:14:31 (Local) | 2026-05-14 01:14:31 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140002
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140002","TransactDate":"2026-05-14 01:14:29","OriginalDate":null,"TransactTime":"01:14:29","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"7AD4B776DA701688BE4C18A775A1048D51433873","data":{"ValueKind":1},"timestamp":"2026-05-14T01:14:31.5296897Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140002"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 10:41:43 (Local) | 2026-05-14 02:41:43 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140006
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140006","TransactDate":"2026-05-14 02:41:42","OriginalDate":null,"TransactTime":"02:41:42","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"50488FE86314D8A18D130EBE025F8BC37275AC09","data":{"ValueKind":1},"timestamp":"2026-05-14T02:41:43.3443547Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140006"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 10:48:13 (Local) | 2026-05-14 02:48:13 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140007
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140007","TransactDate":"2026-05-14 02:48:11","OriginalDate":null,"TransactTime":"02:48:11","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"50488FE86314D8A18D130EBE025F8BC37275AC09","data":{"ValueKind":1},"timestamp":"2026-05-14T02:48:13.744515Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140007"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 10:56:07 (Local) | 2026-05-14 02:56:07 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140008
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140008","TransactDate":"2026-05-14 02:56:05","OriginalDate":null,"TransactTime":"02:56:05","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"9F30AF4D33EB01DB6C313059BCDA2649A21E796D","data":{"ValueKind":1},"timestamp":"2026-05-14T02:56:07.2525264Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140008"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 11:27:24 (Local) | 2026-05-14 03:27:24 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140013
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140013","TransactDate":"2026-05-14 03:27:23","OriginalDate":null,"TransactTime":"03:27:23","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"D10461CD76EBD74407A7572FEC32A486209CAD63","data":{"ValueKind":1},"timestamp":"2026-05-14T03:27:24.2506982Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140013"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 11:38:55 (Local) | 2026-05-14 03:38:55 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140014
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140014","TransactDate":"2026-05-14 03:38:54","OriginalDate":null,"TransactTime":"03:38:54","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"D10461CD76EBD74407A7572FEC32A486209CAD63","data":{"ValueKind":1},"timestamp":"2026-05-14T03:38:55.5972297Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140014"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 11:48:19 (Local) | 2026-05-14 03:48:19 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140017
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140017","TransactDate":"2026-05-14 03:48:18","OriginalDate":null,"TransactTime":"03:48:18","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"7D07EB772B2016B58C3473EF0FBF4A8A13749BF2","data":{"ValueKind":1},"timestamp":"2026-05-14T03:48:19.5316101Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140017"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 13:13:10 (Local) | 2026-05-14 05:13:10 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140023
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140023","TransactDate":"2026-05-14 05:13:09","OriginalDate":null,"TransactTime":"05:13:09","SalesAmt":6.0,"SalesAmtToCalculatePoints":6.0,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"18F531E8B5FD123A359B951C498FB1063E9B47E2","data":{"ValueKind":1},"timestamp":"2026-05-14T05:13:10.0027892Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140023"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 13:28:57 (Local) | 2026-05-14 05:28:57 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140025
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140025","TransactDate":"2026-05-14 05:28:56","OriginalDate":null,"TransactTime":"05:28:56","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"EEBE84B563EAB836BA5E1DB0E659AFB77B01693D","data":{"ValueKind":1},"timestamp":"2026-05-14T05:28:57.4037933Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140025"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 13:40:49 (Local) | 2026-05-14 05:40:49 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140026
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140026","TransactDate":"2026-05-14 05:40:48","OriginalDate":null,"TransactTime":"05:40:48","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"D9FF7C83F7908E4E9F7EF25A4BC0ED9629DA7781","data":{"ValueKind":1},"timestamp":"2026-05-14T05:40:49.2687702Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140026"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:12:20 (Local) | 2026-05-14 06:12:20 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140027
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140027","TransactDate":"2026-05-14 06:12:18","OriginalDate":null,"TransactTime":"06:12:18","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"692210737496785BE0D06A64E8EBAC82700AE82A","data":{"ValueKind":1},"timestamp":"2026-05-14T06:12:20.0710905Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140027"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:22:04 (Local) | 2026-05-14 06:22:04 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140029
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140029","TransactDate":"2026-05-14 06:22:03","OriginalDate":null,"TransactTime":"06:22:03","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"692210737496785BE0D06A64E8EBAC82700AE82A","data":{"ValueKind":1},"timestamp":"2026-05-14T06:22:04.1133101Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140029"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:27:52 (Local) | 2026-05-14 06:27:52 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140030
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140030","TransactDate":"2026-05-14 06:27:50","OriginalDate":null,"TransactTime":"06:27:50","SalesAmt":6.0,"SalesAmtToCalculatePoints":6.0,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"692210737496785BE0D06A64E8EBAC82700AE82A","data":{"ValueKind":1},"timestamp":"2026-05-14T06:27:52.2743635Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140030"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:37:10 (Local) | 2026-05-14 06:37:10 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140032
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140032","TransactDate":"2026-05-14 06:37:09","OriginalDate":null,"TransactTime":"06:37:09","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"153A83CF400575BD8CC8738841A48971E3B133E8","data":{"ValueKind":1},"timestamp":"2026-05-14T06:37:10.3128058Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140032"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:46:20 (Local) | 2026-05-14 06:46:20 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140035
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140035","TransactDate":"2026-05-14 06:46:19","OriginalDate":null,"TransactTime":"06:46:19","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"153A83CF400575BD8CC8738841A48971E3B133E8","data":{"ValueKind":1},"timestamp":"2026-05-14T06:46:20.4289799Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140035"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:48:43 (Local) | 2026-05-14 06:48:43 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140036
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140036","TransactDate":"2026-05-14 06:48:42","OriginalDate":null,"TransactTime":"06:48:42","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"153A83CF400575BD8CC8738841A48971E3B133E8","data":{"ValueKind":1},"timestamp":"2026-05-14T06:48:43.796436Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140036"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 14:52:28 (Local) | 2026-05-14 06:52:28 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140037
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140037","TransactDate":"2026-05-14 06:52:27","OriginalDate":null,"TransactTime":"06:52:27","SalesAmt":6.9,"SalesAmtToCalculatePoints":6.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"153A83CF400575BD8CC8738841A48971E3B133E8","data":{"ValueKind":1},"timestamp":"2026-05-14T06:52:28.604746Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140037"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 16:28:23 (Local) | 2026-05-14 08:28:23 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140042
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140042","TransactDate":"2026-05-14 08:28:19","OriginalDate":null,"TransactTime":"08:28:19","SalesAmt":10.0,"SalesAmtToCalculatePoints":10.0,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[{"ValueKind":1}],"TransactDetailLists":[{"ValueKind":1},{"ValueKind":1},{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"6E356D06EE8C6758433F8E4EBB7FAB35779FBE89","data":{"ValueKind":1},"timestamp":"2026-05-14T08:28:23.187305Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140042"}
+==========================================================
+
+==========================================================
+Timestamp : 2026-05-14 16:38:00 (Local) | 2026-05-14 08:38:00 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-SOK202605140043
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"POS-SD","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-SOK202605140043","TransactDate":"2026-05-14 08:37:58","OriginalDate":null,"TransactTime":"08:37:58","SalesAmt":11.0,"SalesAmtToCalculatePoints":11.0,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1},{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"6E356D06EE8C6758433F8E4EBB7FAB35779FBE89","data":{"ValueKind":1},"timestamp":"2026-05-14T08:38:00.271591Z","card_no":"LiHO00562102","receipt_no":"SAL-SOK202605140043"}
+==========================================================
+

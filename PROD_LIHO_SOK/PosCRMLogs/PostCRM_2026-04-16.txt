@@ -1,0 +1,9 @@
+﻿==========================================================
+Timestamp : 2026-04-16 09:53:37 (Local) | 2026-04-16 01:53:37 UTC
+Module    : PostAscentisSales
+SalesNo   : SAL-TQR202604160003
+Info      : CardNo: LiHO00562102
+Request   : {"Command":"SALES","EnquiryCode":"","OutletCode":"ARC","PosID":"POS001","CashierID":"Cashier001","IgnoreCCNchecking":"true","StoreCode":"ARC","IsOffline":false,"CardNo":"LiHO00562102","CVC":"","ReceiptNo":"SAL-TQR202604160003","TransactDate":"2026-04-16 01:53:36","OriginalDate":null,"TransactTime":"01:53:36","SalesAmt":15.9,"SalesAmtToCalculatePoints":15.9,"SalesAmtToCalculateAR":0,"RedemptionVoucherLists":[],"TransactDetailLists":[{"ValueKind":1}],"PaymentList":[{"ValueKind":1}],"RunCampaign":true,"CampaignType":"Sales Campaign","CheckQualificationRules":true,"RetrieveMembershipInfo":true,"RetrieveReceiptMessage":true,"CheckReceiptNoDuplication":true,"CheckOutletCodeDuplication":true,"CheckOriginalDateDuplication":true,"Ref1":"Test Store","Ref2":"Q"}
+Response  : {"success":true,"sessionid":"C0AE7E2C0DB516AC36D9353F2908BA17418F36ED","data":{"ValueKind":1},"timestamp":"2026-04-16T01:53:37.5537793Z","card_no":"LiHO00562102","receipt_no":"SAL-TQR202604160003"}
+==========================================================
+
