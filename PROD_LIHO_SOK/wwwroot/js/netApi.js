@@ -367,14 +367,10 @@ export async function getItems(params = {}) {
 export async function getPOSMenuAvailableItems(params = {}) {
     try {
         const data = await apiFetch('/checkPOSMenuStocks');
-
         let itemsArray = [];
 
-        // Format 1: data.output (direct array)
         if (Array.isArray(data?.output)) {
             itemsArray = data.output;
-
-            // Format 2: data.data[0].output (nested, output is a JSON string)
         } else if (data?.data?.[0]?.output) {
             const raw = data.data[0].output;
             try {
@@ -383,19 +379,24 @@ export async function getPOSMenuAvailableItems(params = {}) {
                 console.error('🚨 Failed to parse output JSON string:', parseErr);
                 itemsArray = [];
             }
-
-            // Format 3: data is already an array
         } else if (Array.isArray(data)) {
             itemsArray = data;
-
         } else {
             console.warn('⚠️ Unrecognized API response format:', data);
         }
 
         sessionStorage.setItem("AvailablePOSMenuItems", JSON.stringify(itemsArray));
+
+        // ← ADD THIS: push into cache so getStockStatus can read it
+        const cache = useCache();
+        if (typeof cache.setStocks === 'function') {
+            cache.setStocks(itemsArray);
+        } else {
+            cache.stocks = itemsArray; // fallback if no setter
+        }
+
         console.log("✅ Available POS Menu items loaded and cached:", itemsArray.length, 'items');
         return itemsArray;
-
     } catch (err) {
         console.error('🚨 Failed to fetch items:', err);
         return null;
@@ -422,6 +423,14 @@ export async function getAddons(params = {}) {
 
 // Fetch and cache item remarks
 export async function getItemRemarks(params = {}) {
+    const existing = window.apiManager?.loadedData?.get('ItemRemarks')
+        ?? window.apiManager?.loadedData?.get('itemRemarks');
+    if (existing?.length > 0 && window.__isWarmBoot) {
+        window.remarksCache = existing;
+        console.log("⚡ ItemRemarks restored from warm-boot cache:", existing.length, "items");
+        return existing;
+    }
+
     try {
         const data = await apiFetch('/getItemRemarks');
         const itemRemarks = data?.output || [];

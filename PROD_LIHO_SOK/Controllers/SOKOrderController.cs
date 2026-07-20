@@ -977,7 +977,7 @@ namespace PROD_LIHO_SOK.Controllers
                         OrderData = request.OrderData ?? new SOKOrderData
                         {
                             ServiceType = request.OrderType,
-                            ServiceTypeInfo = request.OrderType == "E" ? "Dine In" : "Takeaway",
+                            ServiceTypeInfo = GetServiceTypeInfo(request.OrderType),
                             TableNo = request.TableNo,
                             ServerOrderId = orderId
                         },
@@ -1046,7 +1046,7 @@ namespace PROD_LIHO_SOK.Controllers
                     OrderData = request.OrderData ?? new SOKOrderData
                     {
                         ServiceType = request.OrderType,
-                        ServiceTypeInfo = request.OrderType == "E" ? "Dine In" : "Takeaway",
+                        ServiceTypeInfo = GetServiceTypeInfo(request.OrderType),
                         TableNo = request.TableNo,
                         DocDate = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
                         AbsorbTax = "N",
@@ -1229,7 +1229,7 @@ namespace PROD_LIHO_SOK.Controllers
                 // ✅ Fill in REQUIRED fields with defaults if missing
                 request.OrderData.DocDate ??= DateTime.UtcNow.ToString("yyyy/MM/dd HH:mm:ss");
                 request.OrderData.ServiceType ??= request.OrderType;
-                request.OrderData.ServiceTypeInfo ??= request.OrderType == "E" ? "DineIn" : "Takeaway";
+                request.OrderData.ServiceTypeInfo ??= GetServiceTypeInfo(request.OrderType);
                 request.OrderData.AbsorbTax ??= "Y";
                 request.OrderData.AbsorbTaxInfo ??= "Absorb Tax";
 
@@ -1248,7 +1248,7 @@ namespace PROD_LIHO_SOK.Controllers
                     // ✅ Preserve required fields from existing cache if new data doesn't have them
                     request.OrderData.DocDate ??= existingCache.OrderData?.DocDate ?? DateTime.UtcNow.ToString("yyyy/MM/dd HH:mm:ss");
                     request.OrderData.ServiceType ??= existingCache.OrderData?.ServiceType ?? request.OrderType;
-                    request.OrderData.ServiceTypeInfo ??= existingCache.OrderData?.ServiceTypeInfo ?? (request.OrderType == "E" ? "DineIn" : "Takeaway");
+                    request.OrderData.ServiceTypeInfo ??= existingCache.OrderData?.ServiceTypeInfo ?? GetServiceTypeInfo(request.OrderType);
                     request.OrderData.AbsorbTax ??= existingCache.OrderData?.AbsorbTax ?? "Y";
                     request.OrderData.AbsorbTaxInfo ??= existingCache.OrderData?.AbsorbTaxInfo ?? "Absorb Tax";
                     request.OrderData.ServerOrderId ??= existingCache.OrderId;
@@ -2195,6 +2195,15 @@ namespace PROD_LIHO_SOK.Controllers
             if (!string.IsNullOrEmpty(deviceId)) return $"{deviceId}_{orderType}";
             return $"UNKNOWN_{orderType}_{DateTime.UtcNow.Ticks}";
         }
+
+        private static string GetServiceTypeInfo(string orderType) => orderType switch
+        {
+            "E" => "DineIn",
+            "Q" => "QuickService",
+            "T" => "Takeaway",
+            "D" => "Delivery",
+            _ => "Takeaway"
+        };
 
         private SOKOrder MapOrderCacheToSokOrder(OrderCache cache)
         {

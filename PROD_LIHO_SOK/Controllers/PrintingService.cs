@@ -112,23 +112,6 @@ namespace PROD_LIHO_SOK.Services
             }
         }
 
-        // ── PrintPdfAsync ──────────────────────────────────────────────────────
-        //
-        // KEY FIX for "prints too small":
-        //
-        // The root cause is that PrintDocument's Graphics context runs at the
-        // printer's reported DPI (e.g. 203), but DrawImage dimensions are in
-        // 1/100-inch units. If you render at 203dpi and then pass pixel counts
-        // as DrawImage width/height, Windows treats those as 1/100-inch values —
-        // making a 576px wide image print at 5.76 inches instead of 80mm (3.15in).
-        //
-        // Fix: always convert px → inches → 1/100-inch explicitly:
-        //   printWidth  = (renderedWidthPx  / renderDpi) * 100
-        //   printHeight = (renderedHeightPx / renderDpi) * 100
-        //
-        // Also: set paper size to match the PDF page exactly so the driver
-        // does not apply any additional fit-to-page scaling.
-
         private Task<bool> PrintPdfAsync(
             string printerName, byte[] pdfData, string fileName, bool rotate)
         {
@@ -137,11 +120,10 @@ namespace PROD_LIHO_SOK.Services
                 _logger.LogInformation(
                     "PrintPdfAsync → {PrinterName} | {FileName}", printerName, fileName);
 
-                // ✅ Render at 203 DPI — matches POS80 native resolution exactly
                 const float renderDpi = 203f;
 
                 var bitmaps = new List<Image>();
-                var pageSizes = new List<SizeF>(); // PDF page sizes in points
+                var pageSizes = new List<SizeF>();
 
                 using (var ms = new MemoryStream(pdfData))
                 using (var pdfDoc = PdfDocument.Load(ms))
@@ -150,11 +132,9 @@ namespace PROD_LIHO_SOK.Services
 
                     for (int i = 0; i < pdfDoc.PageCount; i++)
                     {
-                        var pageSize = pdfDoc.PageSizes[i]; // in PDF points (1pt = 1/72 inch)
+                        var pageSize = pdfDoc.PageSizes[i];
                         pageSizes.Add(pageSize);
 
-                        // ✅ Render at exactly the PDF's own dimensions @ 203dpi
-                        // pt → inch = pt/72  |  inch → px = inch × dpi
                         int widthPx = (int)(pageSize.Width / 72f * renderDpi);
                         int heightPx = (int)(pageSize.Height / 72f * renderDpi);
 
@@ -171,24 +151,46 @@ namespace PROD_LIHO_SOK.Services
 
                         var img = pdfDoc.Render(
                             i,
-                            widthPx,
-                            heightPx,
-                            renderDpi,
-                            renderDpi,
+                            widthPx, heightPx,
+                            renderDpi, renderDpi,
                             rotation,
                             PdfRenderFlags.ForPrinting);
 
-                        bitmaps.Add(img);
+                        if (img is Bitmap bmp)
+                            bmp.SetResolution(renderDpi, renderDpi);
+
+                        // ── ✅ ADDED: Crop bitmap to receipt content width ──────────
+                        // jsPDF generates A4-wide (210mm) PDFs but receipt content
+                        // sits in the left ~80mm only. Cropping before print means
+                        // scale ≈ 1.0 and content fills the 80mm paper correctly.
+                        // Adjust contentMm if your receipt layout uses a different width.
+                        const float contentMm = 80f;
+                        const float pageMm = 210f;
+                        int cropW = Math.Min((int)(img.Width * (contentMm / pageMm)), img.Width);
+
+                        var cropped = new Bitmap(cropW, img.Height,
+                            System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+                        cropped.SetResolution(renderDpi, renderDpi);
+                        using (var g = Graphics.FromImage(cropped))
+                        {
+                            g.Clear(Color.White);
+                            g.DrawImage(img,
+                                new Rectangle(0, 0, cropW, img.Height),
+                                new Rectangle(0, 0, cropW, img.Height),
+                                GraphicsUnit.Pixel);
+                        }
+                        img.Dispose();
+                        bitmaps.Add(cropped);
+                        // ── END CROP ─────────────────────────────────────────────────
                     }
                 }
 
                 int currentPage = 0;
+                int currentOffsetPx = 0;
 
                 using var pd = new PrintDocument();
                 pd.PrinterSettings.PrinterName = printerName;
                 pd.PrinterSettings.PrintToFile = false;
-
-                // ✅ Zero margins — thermal printers have no physical margins
                 pd.DefaultPageSettings.Margins = new Margins(0, 0, 0, 0);
 
                 if (!pd.PrinterSettings.IsValid)
@@ -197,22 +199,15 @@ namespace PROD_LIHO_SOK.Services
                     return Task.FromResult(false);
                 }
 
+                // ✅ Unchanged — use driver's own paper size definition
                 pd.QueryPageSettings += (sender, e) =>
                 {
-                    // ✅ Set paper size per-page to EXACTLY match PDF page dimensions
-                    // This prevents the driver from scaling to fit a default paper size
-                    // Units: 1/100 inch  (same as PrintDocument Graphics units)
-                    var ps = pageSizes[currentPage];
-
-                    int paperW = (int)(ps.Width / 72f * 100f); // pt → 1/100 inch
-                    int paperH = (int)(ps.Height / 72f * 100f);
-
-                    e.PageSettings.PaperSize = new PaperSize("Custom", paperW, paperH);
+                    foreach (PaperSize size in pd.PrinterSettings.PaperSizes)
+                    {
+                        _logger.LogInformation("Driver paper: {Name} {W}×{H}", size.PaperName, size.Width, size.Height);
+                        if (size.PaperName.Contains("80")) { e.PageSettings.PaperSize = size; break; }
+                    }
                     e.PageSettings.Margins = new Margins(0, 0, 0, 0);
-
-                    _logger.LogInformation(
-                        "QueryPageSettings page {Page} → PaperSize {W}×{H} (1/100in)",
-                        currentPage, paperW, paperH);
                 };
 
                 pd.PrintPage += (sender, e) =>
@@ -224,26 +219,35 @@ namespace PROD_LIHO_SOK.Services
                         if (img is Bitmap bmp)
                             bmp.SetResolution(renderDpi, renderDpi);
 
-                        // ✅ Convert rendered pixels → inches → 1/100-inch (PrintDocument units)
-                        // This is the critical calculation that fixes "too small" / "too large"
-                        float printWidth = img.Width / renderDpi * 100f;
-                        float printHeight = img.Height / renderDpi * 100f;
+                        // scale-to-fit: when driver paper == PDF width, scale ≈ 1.0 → actual size
+                        float imgWidth100 = img.Width / renderDpi * 100f;
+                        float destWidth = e.PageBounds.Width;
+                        float scale = destWidth / imgWidth100;
+
+                        int pageHeightPx = (int)(e.PageBounds.Height / 100f * renderDpi / scale);
+                        int sliceHeightPx = Math.Min(pageHeightPx, img.Height - currentOffsetPx);
+
+                        var srcRect = new Rectangle(0, currentOffsetPx, img.Width, sliceHeightPx);
+                        var destRect = new RectangleF(
+                            0f, 0f,
+                            destWidth,
+                            sliceHeightPx / renderDpi * 100f * scale);
+
+                        e.Graphics.PageUnit = GraphicsUnit.Display;
+                        e.Graphics.DrawImage(img, destRect, srcRect, GraphicsUnit.Pixel);
 
                         _logger.LogInformation(
-                            "PrintPage {Page} → {W}px×{H}px @ {Dpi}dpi → {PW}×{PH} (1/100in)",
-                            currentPage, img.Width, img.Height, renderDpi,
-                            printWidth, printHeight);
+                            "PrintPage bmp {Page} offset {Off}px slice {Slice}px of {Total}px | scale {Scale}",
+                            currentPage, currentOffsetPx, sliceHeightPx, img.Height, scale);
 
-                        // ✅ High quality rendering — no blurring on draw
-                        e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-                        e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                        e.Graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.AssumeLinear;
+                        currentOffsetPx += sliceHeightPx;
 
-                        // ✅ Draw from (0,0) — no margin offset
-                        e.Graphics.DrawImage(img, 0f, 0f, printWidth, printHeight);
+                        if (currentOffsetPx >= img.Height)
+                        {
+                            currentPage++;
+                            currentOffsetPx = 0;
+                        }
 
-                        currentPage++;
                         e.HasMorePages = currentPage < bitmaps.Count;
                     }
                     catch (Exception ex)
@@ -273,6 +277,170 @@ namespace PROD_LIHO_SOK.Services
                 return Task.FromResult(false);
             }
         }
+
+
+        // ── PrintPdfAsync ──────────────────────────────────────────────────────
+        //
+        // KEY FIX for "prints too small":
+        //
+        // The root cause is that PrintDocument's Graphics context runs at the
+        // printer's reported DPI (e.g. 203), but DrawImage dimensions are in
+        // 1/100-inch units. If you render at 203dpi and then pass pixel counts
+        // as DrawImage width/height, Windows treats those as 1/100-inch values —
+        // making a 576px wide image print at 5.76 inches instead of 80mm (3.15in).
+        //
+        // Fix: always convert px → inches → 1/100-inch explicitly:
+        //   printWidth  = (renderedWidthPx  / renderDpi) * 100
+        //   printHeight = (renderedHeightPx / renderDpi) * 100
+        //
+        // Also: set paper size to match the PDF page exactly so the driver
+        // does not apply any additional fit-to-page scaling.
+
+        //    private Task<bool> PrintPdfAsync(
+        //string printerName, byte[] pdfData, string fileName, bool rotate)
+        //    {
+        //        try
+        //        {
+        //            _logger.LogInformation(
+        //                "PrintPdfAsync → {PrinterName} | {FileName}", printerName, fileName);
+
+        //            const float renderDpi = 203f;
+
+        //            var bitmaps = new List<Image>();
+        //            var pageSizes = new List<SizeF>();
+
+        //            using (var ms = new MemoryStream(pdfData))
+        //            using (var pdfDoc = PdfDocument.Load(ms))
+        //            {
+        //                _logger.LogInformation("PDF loaded: {Pages} page(s)", pdfDoc.PageCount);
+
+        //                for (int i = 0; i < pdfDoc.PageCount; i++)
+        //                {
+        //                    var pageSize = pdfDoc.PageSizes[i]; // PDF points (1pt = 1/72 inch)
+        //                    pageSizes.Add(pageSize);
+
+        //                    int widthPx = (int)(pageSize.Width / 72f * renderDpi);
+        //                    int heightPx = (int)(pageSize.Height / 72f * renderDpi);
+
+        //                    _logger.LogInformation(
+        //                        "Page {Page}: {PtW}×{PtH}pt → {W}×{H}px @ {Dpi}dpi  ({Wmm}×{Hmm}mm)",
+        //                        i,
+        //                        pageSize.Width, pageSize.Height,
+        //                        widthPx, heightPx,
+        //                        renderDpi,
+        //                        pageSize.Width / 72f * 25.4f,
+        //                        pageSize.Height / 72f * 25.4f);
+
+        //                    var rotation = rotate ? PdfRotation.Rotate180 : PdfRotation.Rotate0;
+
+        //                    var img = pdfDoc.Render(
+        //                        i,
+        //                        widthPx, heightPx,
+        //                        renderDpi, renderDpi,
+        //                        rotation,
+        //                        PdfRenderFlags.ForPrinting);
+
+        //                    if (img is Bitmap bmp)
+        //                        bmp.SetResolution(renderDpi, renderDpi);
+
+        //                    bitmaps.Add(img);
+        //                }
+        //            }
+
+        //            int currentPage = 0;
+        //            int currentOffsetPx = 0; // ✅ From Doc 5 — supports multi-page slicing
+
+        //            using var pd = new PrintDocument();
+        //            pd.PrinterSettings.PrinterName = printerName;
+        //            pd.PrinterSettings.PrintToFile = false;
+        //            pd.DefaultPageSettings.Margins = new Margins(0, 0, 0, 0);
+
+        //            if (!pd.PrinterSettings.IsValid)
+        //            {
+        //                _logger.LogError("❌ Invalid printer: {PrinterName}", printerName);
+        //                return Task.FromResult(false);
+        //            }
+
+        //            // ✅ From Doc 5 — use driver's own paper size definition
+        //            pd.QueryPageSettings += (sender, e) =>
+        //            {
+        //                foreach (PaperSize size in pd.PrinterSettings.PaperSizes)
+        //                {
+        //                    _logger.LogInformation("Driver paper: {Name} {W}×{H}", size.PaperName, size.Width, size.Height);
+        //                    if (size.PaperName.Contains("80")) { e.PageSettings.PaperSize = size; break; }
+        //                }
+        //                e.PageSettings.Margins = new Margins(0, 0, 0, 0);
+        //            };
+
+        //            pd.PrintPage += (sender, e) =>
+        //            {
+        //                try
+        //                {
+        //                    var img = bitmaps[currentPage];
+
+        //                    if (img is Bitmap bmp)
+        //                        bmp.SetResolution(renderDpi, renderDpi);
+
+        //                    // ✅ From Doc 4 — actual size from PDF, never trust e.PageBounds for width
+        //                    float printWidth = img.Width / renderDpi * 100f;  // px → 1/100 inch
+
+        //                    // ✅ From Doc 5 — slicing: how many px fit on this page height
+        //                    int pageHeightPx = (int)(e.PageBounds.Height / 100f * renderDpi);
+        //                    int sliceHeightPx = Math.Min(pageHeightPx, img.Height - currentOffsetPx);
+        //                    float sliceH100 = sliceHeightPx / renderDpi * 100f; // slice height → 1/100 inch
+
+        //                    var srcRect = new Rectangle(0, currentOffsetPx, img.Width, sliceHeightPx);
+        //                    var destRect = new RectangleF(0f, 0f, printWidth, sliceH100);
+
+        //                    // ✅ From Doc 4 — thermal-optimised rendering, no blur/anti-alias
+        //                    e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        //                    e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+        //                    e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+        //                    e.Graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.AssumeLinear;
+
+        //                    e.Graphics.DrawImage(img, destRect, srcRect, GraphicsUnit.Pixel);
+
+        //                    _logger.LogInformation(
+        //                        "PrintPage {Page} offset {Off}px slice {Slice}px of {Total}px | dest {W}×{H} (1/100in)",
+        //                        currentPage, currentOffsetPx, sliceHeightPx, img.Height, printWidth, sliceH100);
+
+        //                    currentOffsetPx += sliceHeightPx;
+
+        //                    if (currentOffsetPx >= img.Height)
+        //                    {
+        //                        currentPage++;
+        //                        currentOffsetPx = 0;
+        //                    }
+
+        //                    e.HasMorePages = currentPage < bitmaps.Count;
+        //                }
+        //                catch (Exception ex)
+        //                {
+        //                    _logger.LogError(ex, "❌ PrintPage error on page {Page}", currentPage);
+        //                    e.HasMorePages = false;
+        //                }
+        //            };
+
+        //            pd.EndPrint += (sender, e) =>
+        //            {
+        //                foreach (var img in bitmaps)
+        //                    img.Dispose();
+        //                _logger.LogInformation("🧹 Bitmaps disposed");
+        //            };
+
+        //            pd.Print();
+
+        //            _logger.LogInformation("✅ PrintPdfAsync success → {FileName}", fileName);
+        //            return Task.FromResult(true);
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            _logger.LogError(ex,
+        //                "❌ PrintPdfAsync failed → {PrinterName} | {FileName}",
+        //                printerName, fileName);
+        //            return Task.FromResult(false);
+        //        }
+        //    }
 
         // ── SavePrintJobAsync ──────────────────────────────────────────────────
 

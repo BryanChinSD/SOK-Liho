@@ -1,16 +1,32 @@
-﻿// ─── KIOSK SEARCH MODULE ──────────────────────────────────────────────────────
-// LiHO Tea Kiosk — header search bar
-// Searches ALL items across ALL categories, not just the active one.
-//
-// Usage:
-//   1. Copy to /js/kiosk-search.js
-//   2. Add <div id="ks-search-anchor"></div> inside .header in your HTML
-//      (between .landing-logo1 and .header-info)
-//   3. Add at bottom of GetHomeAPI.js:
-//        window.renderCategoryByCode = renderCategoryByCode;
-//   4. Add in <head> after Payment.js:
-//        <script type="module" src="/js/kiosk-search.js" asp-append-version="true"></script>
+﻿import {
+    ADDON_STARTING_DS_NO,
+    FREE_ITEM_BY_VALUE_STARTING_DS_NO,
+    FREE_ITEM_STARTING_DS_NO,
+    PROMO_TYPE,
+    SPECIAL_DISCOUNT_WITH_QUANTITY_ITEM_STARTING_DS_NO,
+    SPECIAL_PRICE_ITEM_STARTING_DS_NO,
+    TIME_FORMAT,
+    ORDERS_TYPE,
+    SERVICE_TYPES,
+    DEFAULT_MENU_CATEGORY_COLUMNS,
+    DEFAULT_MENU_ITEM_COLUMNS,
+    DATE_FORMAT,
+    STATUS,
+    CASH_RECON_STATUS,
+    TQR_ORDERS_CAPTURING_PROCESS_TYPE,
+    OPEN_ITEM_PREFIX,
+    ACTIVE_ORDERS_VIEW,
+    WEEKDAY,
+    TAKEAWAY_CHARGE_ITEM_STARTING_DS_NO,
+    ADDON_2_STARTING_DS_NO,
+    CRM_VENDOR,
+    CRM_VOUCHER_TYPE,
+    MODIFIER_STARTING_DS_NO,
+    MODIFIER_2_STARTING_DS_NO
+} from "../utils/constants.js";
 
+
+// ─── KIOSK SEARCH ────────────────────────────────────────────────────────────
 (function () {
     'use strict';
 
@@ -28,36 +44,164 @@
             'category_code',
             'sku_no',
         ],
-        placeholder: 'Search menu…',
+        placeholder: 'Search menu\u2026',
         noResultsText: 'No items found',
     };
+
+    // ─── ORDER-TYPE CONSTANTS (derived from SERVICE_TYPES — no hard-coded letters) ──
+    const SERVICE_TYPE_INFO_TO_FIELD = {
+        QuickService: 'hide_item_quick_service',
+        DineIn: 'hide_item_dinein',
+        TakeAway: 'hide_item_takeaway',
+        Delivery: 'hide_item_delivery',
+    };
+
+    const getServiceTypeByInfo = info =>
+        SERVICE_TYPES?.find(s => s.service_type_info === info)?.service_type;
+
+    const DEFAULT_SERVICE_TYPE = getServiceTypeByInfo('QuickService');
+    const DELIVERY_SERVICE_TYPE = getServiceTypeByInfo('Delivery');
+    const DELIVERY_CATEGORY_SUFFIX = `(${DELIVERY_SERVICE_TYPE})`;
+
+    const HIDE_FIELD_BY_SERVICE_TYPE = (() => {
+        try {
+            if (Array.isArray(SERVICE_TYPES) && SERVICE_TYPES.length) {
+                return Object.fromEntries(
+                    SERVICE_TYPES
+                        .map(({ service_type, service_type_info }) => [
+                            service_type,
+                            SERVICE_TYPE_INFO_TO_FIELD[service_type_info] ?? null,
+                        ])
+                        .filter(([, v]) => v !== null)
+                );
+            }
+        } catch (_) { }
+        return {};
+    })();
 
     let _timer = null;
     let _lastQuery = '';
     let _active = false;
 
-    // ─── FULL ITEM POOL ───────────────────────────────────────────────────────
-    // Cached once — ALL items from ALL categories.
-    // Never reads window.menuGridItems (that only has the active category).
+    // ─── ITEM POOL CACHE ─────────────────────────────────────────────────────
     let _allItemsCache = null;
     let _allItemsCacheTs = 0;
-    const CACHE_TTL = 5 * 60 * 1000; // rebuild if stale > 5 min
+    let _allItemsCacheVersion = null;
+    const CACHE_TTL = 5 * 60 * 1000;
+    const CACHE_VERSION = 'v3';
 
+    // ─── HELPERS ─────────────────────────────────────────────────────────────
+    const isHidden = v => { const s = String(v || ''); return s === '1' || s === 'Y'; };
+
+    const mergeHideFlag = (a, b) =>
+        (isHidden(a) || isHidden(b)) ? '1' : '0';
+
+    const getCats = section =>
+        Array.isArray(section.category)
+            ? section.category
+            : (section.category && typeof section.category === 'object'
+                ? [section.category] : []);
+
+    // ─── BUILD HIDDEN CATEGORY SET ───────────────────────────────────────────
+    function buildHiddenCategorySet(menuSections) {
+        const hiddenSet = new Set();
+
+        // Pass 1 — mark directly hidden root codes, sub-categories, and item categories
+        for (const section of menuSections) {
+            const rootHidden = isHidden(section.hide_from_tqr);
+
+            if (rootHidden && section.root_category_code) {
+                hiddenSet.add(section.root_category_code.trim());
+            }
+
+            for (const cat of getCats(section)) {
+                if (!cat?.category_code) continue;
+                if (rootHidden || isHidden(cat.hide_from_tqr)) {
+                    hiddenSet.add(cat.category_code.trim());
+                }
+            }
+
+            if (rootHidden) {
+                for (const item of (section.items || [])) {
+                    if (item?.category_code) hiddenSet.add(item.category_code.trim());
+                }
+            }
+        }
+
+        // Pass 2 — propagate: any section whose root_category_code is already
+        // hidden should have its sub-categories and items hidden too
+        for (const section of menuSections) {
+            const rootCode = section.root_category_code?.trim();
+            if (!rootCode || !hiddenSet.has(rootCode)) continue;
+
+            for (const cat of getCats(section)) {
+                if (cat?.category_code) hiddenSet.add(cat.category_code.trim());
+            }
+
+            for (const item of (section.items || [])) {
+                if (item?.category_code) hiddenSet.add(item.category_code.trim());
+            }
+        }
+
+        // Pass 3 — sub-categories of hidden root sections that became their own
+        // root sections (e.g. "饮料 BEVERAGE (LARGE)" listed under hidden "ADD ON")
+        for (const section of menuSections) {
+            const rootCode = section.root_category_code?.trim();
+            if (!rootCode || hiddenSet.has(rootCode)) continue;
+
+            // Check if this rootCode appears as a sub-category of any hidden section
+            const isSubOfHidden = menuSections.some(parent => {
+                if (!hiddenSet.has(parent.root_category_code?.trim())) return false;
+                return getCats(parent).some(c => c?.category_code?.trim() === rootCode);
+            });
+
+            if (isSubOfHidden) {
+                hiddenSet.add(rootCode);
+                for (const item of (section.items || [])) {
+                    if (item?.category_code) hiddenSet.add(item.category_code.trim());
+                }
+            }
+        }
+
+        return hiddenSet;
+    }
+
+    // ─── BUILD CATEGORY HIDE MAP ─────────────────────────────────────────────
+    function buildCategoryHideMap(menuSections) {
+        const map = new Map();
+
+        for (const section of menuSections) {
+            for (const cat of getCats(section)) {
+                if (!cat?.category_code) continue;
+                const code = cat.category_code.trim();
+                map.set(code, mergeHideFlag(map.get(code) || '0', cat.hide_from_tqr));
+            }
+            if (section.root_category_code) {
+                const code = section.root_category_code.trim();
+                map.set(code, mergeHideFlag(map.get(code) || '0', section.hide_from_tqr));
+            }
+        }
+
+        return map;
+    }
+
+    // ─── BUILD ALL ITEMS ─────────────────────────────────────────────────────
     function buildAllItems() {
         const now = Date.now();
-        if (_allItemsCache && (now - _allItemsCacheTs) < CACHE_TTL) {
+        if (
+            _allItemsCache &&
+            _allItemsCacheVersion === CACHE_VERSION &&
+            (now - _allItemsCacheTs) < CACHE_TTL
+        ) {
             return _allItemsCache;
         }
 
+        // 1. Load menu sections
         let menuSections = [];
-        let fullItems = [];
 
-        // 1. menuItems — all sections with category structure
         try {
             const c = window.useCache?.();
-            if (c?.menuItems?.length) {
-                menuSections = c.menuItems;
-            }
+            if (c?.menuItems?.length) menuSections = c.menuItems;
         } catch (_) { }
 
         if (!menuSections.length) {
@@ -75,19 +219,18 @@
             } catch (_) { }
         }
 
-        // 2. FullItems — has item_desc, shot_name, selling_uom_dtls, modifiers etc.
+        // 2. Load full items
+        let fullItems = [];
+
         try {
             const c = window.useCache?.();
             if (c?.items?.length) fullItems = c.items;
         } catch (_) { }
 
-        if (!fullItems.length) {
-            fullItems = window.apiManager?.loadedData?.get('items') || [];
-        }
+        if (!fullItems.length) fullItems = window.apiManager?.loadedData?.get('items') || [];
 
         if (!fullItems.length) {
             try {
-                // LZ-compressed in sessionStorage
                 const raw = sessionStorage.getItem('FullItems');
                 if (raw && typeof LZString !== 'undefined') {
                     const dec = LZString.decompressFromUTF16(raw);
@@ -96,25 +239,99 @@
             } catch (_) { }
         }
 
-        // 3. Flatten all menu items across every section
-        const flat = menuSections.flatMap(s => s.items || []);
+        // 3. Build hidden category set and category hide map
+        const hiddenCategorySet = buildHiddenCategorySet(menuSections);
+        window.__hiddenCategorySet = hiddenCategorySet;
 
-        // 4. Merge FullItems data into menu items (same pattern as _doLoadAndRenderMenu)
+        const categoryHideMap = buildCategoryHideMap(menuSections);
+
+        const effectiveHide = item => {
+            if (isHidden(item.hide_from_tqr)) return '1';
+            const catCode = String(item.category_code || '').trim();
+            if (catCode && isHidden(categoryHideMap.get(catCode))) return '1';
+            return '0';
+        };
+
+        // 4. Flatten and deduplicate menu items by item_no
+        const flatMap = new Map();
+
+        for (const item of menuSections.flatMap(s => s.items || [])) {
+            if (!item?.item_no) continue;
+            const ex = flatMap.get(item.item_no);
+
+            if (!ex) {
+                flatMap.set(item.item_no, { ...item });
+                continue;
+            }
+
+            // Merge hide flags — most restrictive wins
+            ex.hide_from_tqr = mergeHideFlag(ex.hide_from_tqr, item.hide_from_tqr);
+            ex.hide_item_tqr = mergeHideFlag(ex.hide_item_tqr, item.hide_item_tqr);
+            ex.is_emenu_disable = mergeHideFlag(ex.is_emenu_disable, item.is_emenu_disable);
+            ex.is_soldout = mergeHideFlag(ex.is_soldout, item.is_soldout);
+            ex.hide_from_tqr = mergeHideFlag(ex.hide_from_tqr, effectiveHide(item));
+
+            // Keep the richer entry (has image > has price > has description)
+            const score = i =>
+                (i.tqr_image_url ? 4 : 0) +
+                (i.dine_in_price || i.unit_price ? 2 : 0) +
+                (i.item_desc ? 1 : 0);
+
+            if (score(item) > score(ex)) {
+                flatMap.set(item.item_no, {
+                    ...item,
+                    hide_from_tqr: mergeHideFlag(ex.hide_from_tqr, item.hide_from_tqr),
+                    hide_item_tqr: mergeHideFlag(ex.hide_item_tqr, item.hide_item_tqr),
+                    is_emenu_disable: mergeHideFlag(ex.is_emenu_disable, item.is_emenu_disable),
+                    is_soldout: mergeHideFlag(ex.is_soldout, item.is_soldout),
+                });
+            }
+        }
+
+        // Apply effective hide after dedup
+        for (const [, item] of flatMap) {
+            item.hide_from_tqr = mergeHideFlag(item.hide_from_tqr, effectiveHide(item));
+        }
+
+        // 5. Merge FullItems data into menu items
         const fullMap = new Map((fullItems || []).map(fi => [fi.item_no, fi]));
 
-        const merged = flat.map(menuItem => {
+        const richest = (a, b) => {
+            a = a || ''; b = b || '';
+            const hasLatin = s => /[a-zA-Z]/.test(s);
+            if (hasLatin(a) && !hasLatin(b)) return a;
+            if (hasLatin(b) && !hasLatin(a)) return b;
+            return a.length >= b.length ? a : b;
+        };
+
+        const richestOf = (...candidates) => {
+            const vals = candidates.filter(Boolean);
+            if (!vals.length) return '';
+            const bilingual = vals.filter(s => /[a-zA-Z]/.test(s));
+            if (bilingual.length) return bilingual.reduce((a, b) => a.length >= b.length ? a : b);
+            return vals.reduce((a, b) => a.length >= b.length ? a : b);
+        };
+
+        const merged = [...flatMap.values()].map(menuItem => {
             const full = fullMap.get(menuItem.item_no);
             if (!full) return menuItem;
+
             return {
                 ...full,
-                // Menu item fields take priority for display/image
                 ...Object.fromEntries(
                     Object.entries(menuItem).filter(([, v]) =>
                         v !== null && v !== undefined && v !== '' &&
                         !(Array.isArray(v) && v.length === 0)
                     )
                 ),
-                // Always keep rich modifier/uom data from FullItems
+                hide_from_tqr: mergeHideFlag(full.hide_from_tqr, menuItem.hide_from_tqr),
+                hide_item_tqr: mergeHideFlag(full.hide_item_tqr, menuItem.hide_item_tqr),
+                hide_item_dinein: mergeHideFlag(full.hide_item_dinein, menuItem.hide_item_dinein),
+                hide_item_takeaway: mergeHideFlag(full.hide_item_takeaway, menuItem.hide_item_takeaway),
+                hide_item_quick_service: mergeHideFlag(full.hide_item_quick_service, menuItem.hide_item_quick_service),
+                hide_item_delivery: mergeHideFlag(full.hide_item_delivery, menuItem.hide_item_delivery),
+                is_emenu_disable: mergeHideFlag(full.is_emenu_disable, menuItem.is_emenu_disable),
+                is_soldout: mergeHideFlag(full.is_soldout, menuItem.is_soldout),
                 itemmaster_menutype_grpdtls: full.itemmaster_menutype_grpdtls?.length
                     ? full.itemmaster_menutype_grpdtls
                     : (menuItem.itemmaster_menutype_grpdtls || []),
@@ -125,54 +342,132 @@
                     ? full.selling_uom_dtls
                     : (menuItem.selling_uom_dtls || []),
                 tqr_image_url: menuItem.tqr_image_url || full.tqr_image_url || '',
-                // FullItems has better text fields
-                item_desc: full.item_desc || menuItem.item_desc || '',
-                shot_name: full.shot_name || menuItem.shot_name || '',
-                describe_info: full.describe_info || menuItem.describe_info || '',
+                item_desc: richestOf(full.item_desc, menuItem.item_desc, full.item_name, menuItem.item_name, full.display_name, menuItem.display_name),
+                item_name: richest(full.item_name, menuItem.item_name),
+                display_name: richest(full.display_name, menuItem.display_name),
+                shot_name: richest(full.shot_name, menuItem.shot_name),
+                describe_info: richest(full.describe_info, menuItem.describe_info),
                 sku_no: full.sku_no || menuItem.sku_no || '',
             };
         });
 
-        // 5. Deduplicate by item_no
+        // 6. Final dedup of merged list by item_no
         const seen = new Map();
+
         for (const item of merged) {
             if (!item?.item_no) continue;
             const ex = seen.get(item.item_no);
-            if (!ex) { seen.set(item.item_no, item); continue; }
-            // Keep whichever has more data
-            const score = i => (i.tqr_image_url ? 2 : 0) + (i.item_desc ? 1 : 0) +
+
+            if (!ex) {
+                seen.set(item.item_no, item);
+                continue;
+            }
+
+            const score = i =>
+                (i.tqr_image_url ? 4 : 0) +
+                (i.dine_in_price || i.unit_price ? 2 : 0) +
+                (i.item_desc ? 1 : 0) +
                 (i.itemmaster_menutype_grpdtls?.length ? 1 : 0);
-            if (score(item) > score(ex)) seen.set(item.item_no, item);
+
+            seen.set(item.item_no, {
+                ...(score(item) > score(ex) ? item : ex),
+                hide_from_tqr: mergeHideFlag(ex.hide_from_tqr, item.hide_from_tqr),
+                hide_item_tqr: mergeHideFlag(ex.hide_item_tqr, item.hide_item_tqr),
+                hide_item_dinein: mergeHideFlag(ex.hide_item_dinein, item.hide_item_dinein),
+                hide_item_takeaway: mergeHideFlag(ex.hide_item_takeaway, item.hide_item_takeaway),
+                hide_item_quick_service: mergeHideFlag(ex.hide_item_quick_service, item.hide_item_quick_service),
+                hide_item_delivery: mergeHideFlag(ex.hide_item_delivery, item.hide_item_delivery),
+                is_emenu_disable: mergeHideFlag(ex.is_emenu_disable, item.is_emenu_disable),
+                is_soldout: mergeHideFlag(ex.is_soldout, item.is_soldout),
+            });
         }
 
         _allItemsCache = [...seen.values()];
         _allItemsCacheTs = now;
+        _allItemsCacheVersion = CACHE_VERSION;
 
-        console.log(`[KioskSearch] Item pool built: ${_allItemsCache.length} items across all categories`);
+        console.log(`[KioskSearch] Item pool built: ${_allItemsCache.length} items`);
+        console.log(`[KioskSearch] Hidden category set (${hiddenCategorySet.size}):`, [...hiddenCategorySet]);
         return _allItemsCache;
     }
 
-    // Invalidate cache when new data arrives (warm boot, post-order reload etc.)
     function invalidateItemPool() {
         _allItemsCache = null;
         _allItemsCacheTs = 0;
+        _allItemsCacheVersion = null;
     }
 
-    // ─── VISIBILITY FILTER ────────────────────────────────────────────────────
-
+    // ─── VISIBILITY FILTER ───────────────────────────────────────────────────
     function filterVisible(items) {
-        if (typeof window.shouldShowItem === 'function') {
-            return items.filter(i => window.shouldShowItem(i));
+        const isHiddenFlag = v => { const s = String(v || ''); return s === '1' || s === 'Y'; };
+
+        // Detect active order type
+        let activeOrderType = DEFAULT_SERVICE_TYPE;
+        try {
+            const stored = localStorage.getItem('orderType');
+            if (stored) activeOrderType = stored.toUpperCase().trim();
+        } catch (_) { }
+
+        // Make sure the live AVL map is built before we read from it
+        if (!window._itemAvlMapBuilt && typeof window.buildItemAvlMapFromLocalStorage === 'function') {
+            window.buildItemAvlMapFromLocalStorage();
         }
-        return items.filter(i =>
-            i?.item_no &&
-            i.hide_from_tqr !== 'Y' && i.hide_from_tqr !== '1' &&
-            i.is_emenu_disable !== 'Y' && i.is_emenu_disable !== '1'
-        );
+
+        const resolveAvlRecord = i => {
+            const itemNo = i.item_no?.trim();
+            const skuNo = i.sku_no?.trim();
+            return (itemNo && window.itemAvlMap?.[itemNo]) ||
+                (skuNo && window.itemAvlMap?.[skuNo]) ||
+                null;
+        };
+
+        // Delegate to app-level filter if available
+        if (typeof window.shouldShowItem === 'function') {
+            const hiddenCategorySet = window.__hiddenCategorySet || new Set();
+            return items.filter(i => {
+                if (!window.shouldShowItem(i)) return false;
+                const catCode = (i.category_code || '').trim();
+                if (catCode.endsWith(DELIVERY_CATEGORY_SUFFIX) && activeOrderType !== DELIVERY_SERVICE_TYPE) return false;
+                if (catCode && hiddenCategorySet.has(catCode)) return false;
+                return true;
+            });
+        }
+
+        const hideField = HIDE_FIELD_BY_SERVICE_TYPE[activeOrderType] ?? null;
+        const hiddenCategorySet = window.__hiddenCategorySet || new Set();
+
+        console.log(`[KioskSearch] filterVisible — orderType: "${activeOrderType}", hideField: "${hideField}"`);
+        console.log(`[KioskSearch] hiddenCategorySet (${hiddenCategorySet.size}):`, [...hiddenCategorySet]);
+
+        return items.filter(i => {
+            if (!i?.item_no) return false;
+            if (isHiddenFlag(i.hide_from_tqr)) return false;
+
+            // Resolve live stock status the same way shouldShowItem() does:
+            // prefer the AVL record (real-time feed), fall back to the
+            // static item field only when no AVL record exists.
+            const avlRecord = resolveAvlRecord(i);
+
+            const isDisabled = avlRecord
+                ? avlRecord.is_emenu_disable === 'Y'
+                : isHiddenFlag(i.is_emenu_disable);
+            if (isDisabled) return false;
+
+            const isSoldOut = avlRecord
+                ? avlRecord.is_soldout === 'Y'
+                : isHiddenFlag(i.is_soldout);
+            if (isSoldOut) return false;
+
+            if (hideField && isHiddenFlag(i[hideField])) return false;
+
+            const catCode = String(i.category_code || '').trim();
+            if (catCode && hiddenCategorySet.has(catCode)) return false;
+            if (catCode.endsWith(DELIVERY_CATEGORY_SUFFIX) && activeOrderType !== DELIVERY_SERVICE_TYPE) return false;
+
+            return true;
+        });
     }
-
-    // ─── SCORING ──────────────────────────────────────────────────────────────
-
+    // ─── SCORING ─────────────────────────────────────────────────────────────
     const norm = str => (str || '').toLowerCase().trim();
 
     function scoreItem(item, words) {
@@ -181,26 +476,19 @@
             let hit = false;
             for (let fi = 0; fi < CFG.fields.length; fi++) {
                 const val = norm(item[CFG.fields[fi]]);
-                if (!val) continue;
-                if (val.includes(word)) {
-                    hit = true;
-                    // Higher score for earlier fields (item_desc, item_name are most important)
-                    const fieldBonus = (CFG.fields.length - fi) * 3;
-                    const startBonus = val.startsWith(word) ? 5 : 0;
-                    const exactBonus = new RegExp(
-                        `\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`
-                    ).test(val) ? 3 : 0;
-                    total += fieldBonus + startBonus + exactBonus;
-                    break;
-                }
+                if (!val || !val.includes(word)) continue;
+                hit = true;
+                total += (CFG.fields.length - fi) * 3;
+                if (val.startsWith(word)) total += 5;
+                if (new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(val)) total += 3;
+                break;
             }
-            if (!hit) return 0; // all words must match
+            if (!hit) return 0;
         }
         return total;
     }
 
-    // ─── SEARCH ───────────────────────────────────────────────────────────────
-
+    // ─── SEARCH ──────────────────────────────────────────────────────────────
     function search(raw) {
         const q = norm(raw);
         if (q.length < CFG.minChars) { exitSearch(); return; }
@@ -208,19 +496,18 @@
         const words = q.split(/\s+/).filter(Boolean);
         const pool = filterVisible(buildAllItems());
 
-        const scored = [];
-        for (const item of pool) {
-            const s = scoreItem(item, words);
-            if (s > 0) scored.push({ item, s });
-        }
+        console.log(`[KioskSearch] pool: ${pool.length} visible, query: "${q}"`);
 
-        scored.sort((a, b) =>
-            b.s - a.s ||
-            norm(a.item.item_desc || a.item.item_name)
-                .localeCompare(norm(b.item.item_desc || b.item.item_name))
-        );
-
-        const results = scored.slice(0, CFG.maxResults).map(r => r.item);
+        const results = pool
+            .map(item => ({ item, s: scoreItem(item, words) }))
+            .filter(r => r.s > 0)
+            .sort((a, b) =>
+                b.s - a.s ||
+                norm(a.item.item_desc || a.item.item_name)
+                    .localeCompare(norm(b.item.item_desc || b.item.item_name))
+            )
+            .slice(0, CFG.maxResults)
+            .map(r => r.item);
 
         _active = true;
         renderResults(results, words);
@@ -233,27 +520,23 @@
         _lastQuery = '';
         updateCount(0, '');
 
-        // Restore active category
         const activeTab =
             document.querySelector('.category-tab.active') ||
             document.querySelector('.category-tab');
-        if (activeTab) {
-            const code = activeTab.dataset.category;
-            if (code && typeof window.renderCategoryByCode === 'function') {
-                window.renderCategoryByCode(code);
-                return;
-            }
+        if (!activeTab) return;
+
+        const code = activeTab.dataset.category;
+        if (code && typeof window.renderCategoryByCode === 'function') {
+            window.renderCategoryByCode(code);
+        } else {
             activeTab.click();
         }
     }
 
-    // ─── RENDER ───────────────────────────────────────────────────────────────
-
-    function esc(s) {
-        return String(s || '')
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
+    // ─── RENDER ──────────────────────────────────────────────────────────────
+    const esc = s => String(s || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     function highlight(text, words) {
         if (!CFG.highlight || !text) return esc(text || '');
@@ -313,17 +596,9 @@
             return;
         }
 
-        // Hand off to existing render pipeline — it handles skeletons,
-        // modifier modals, add-to-cart etc. correctly.
-        // We must NOT set window.menuGridItems here because that would
-        // break the "exit search → restore category" flow.
-        // Instead we pass a copy and let the render fn use it.
-        const useWorkflow = window.MENU_CONFIG?.RENDERING_MODE !== 'traditional';
-        const snapshot = window.menuGridItems; // save current category items
+        window.menuGridItems = items;
 
-        window.menuGridItems = items; // render needs this for card click handler
-
-        if (useWorkflow && typeof window.renderMenuGridWorkFlow === 'function') {
+        if (window.MENU_CONFIG?.RENDERING_MODE !== 'traditional' && typeof window.renderMenuGridWorkFlow === 'function') {
             window.renderMenuGridWorkFlow(items);
         } else if (typeof window.renderMenuGridTraditional === 'function') {
             window.renderMenuGridTraditional(items);
@@ -331,16 +606,10 @@
             renderFallback(items, words, container);
         }
 
-        // After render, restore snapshot reference so exit search can tell
-        // the active category tab click will repopulate correctly
-        // (renderCategoryByCode re-sets menuGridItems itself anyway)
-
-        // Apply text highlights
         if (CFG.highlight && words.length) {
             requestAnimationFrame(() => {
                 container.querySelectorAll('.font-semibold, h3').forEach(el => {
-                    if (el.textContent.trim())
-                        el.innerHTML = highlight(el.textContent, words);
+                    if (el.textContent.trim()) el.innerHTML = highlight(el.textContent, words);
                 });
             });
         }
@@ -349,10 +618,12 @@
     function renderFallback(items, words, container) {
         const logo = window.RESTAURANT_CONFIG?.logo || '';
         const frag = document.createDocumentFragment();
+
         items.forEach((item, i) => {
             const img = getImg(item);
             const name = item.item_desc || item.display_name || item.item_name || '';
             const price = getPrice(item);
+
             const card = document.createElement('div');
             card.className = 'menu-item p-4 border rounded shadow';
             card.dataset.itemId = item.item_no;
@@ -380,7 +651,8 @@
                     </div>
                 </div>`;
             frag.appendChild(card);
-        });
+        });98
+
         container.innerHTML = '';
         container.appendChild(frag);
         container.removeEventListener('click', _fallbackClickHandler);
@@ -388,25 +660,21 @@
     }
 
     function _fallbackClickHandler(e) {
-        if (e.target.matches('button.add-btn')) {
-            const id = e.target.getAttribute('data-item-id');
-            if (id && typeof window.addToCart === 'function') window.addToCart(id);
-            return;
-        }
-        const card = e.target.closest('.menu-item');
-        if (card && typeof window.addToCart === 'function') window.addToCart(card.dataset.itemId);
+        const id = e.target.matches('button.add-btn')
+            ? e.target.getAttribute('data-item-id')
+            : e.target.closest('.menu-item')?.dataset.itemId;
+        if (id && typeof window.addToCart === 'function') window.addToCart(id);
     }
 
     function updateCount(count, query) {
         const el = document.getElementById('ks-count');
         if (!el) return;
-        el.textContent = query && count > 0
-            ? `${count} result${count !== 1 ? 's' : ''}`
-            : query && count === 0 ? 'No results' : '';
+        el.textContent = !query ? ''
+            : count > 0 ? `${count} result${count !== 1 ? 's' : ''}`
+                : 'No results';
     }
 
-    // ─── INJECT UI ────────────────────────────────────────────────────────────
-
+    // ─── UI INJECTION ────────────────────────────────────────────────────────
     function inject() {
         if (document.getElementById('ks-bar')) return true;
 
@@ -426,14 +694,11 @@
                     <circle cx="11" cy="11" r="8"/>
                     <path d="M21 21l-4.35-4.35"/>
                 </svg>
-                <input id="ks-input"
-                       type="text"
-                       inputmode="none"
+                <input id="ks-input" type="text" inputmode="none"
                        autocomplete="off" autocorrect="off"
                        autocapitalize="off" spellcheck="false"
                        placeholder="${CFG.placeholder}"
-                       aria-label="Search menu"
-                       readonly />
+                       aria-label="Search menu" readonly />
                 <button id="ks-clear" aria-label="Clear search" style="display:none;">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="2.5" aria-hidden="true">
@@ -447,7 +712,7 @@
         anchor.appendChild(bar);
         injectStyles();
         bindEvents();
-        console.log('[KioskSearch] ✅ Injected — item pool will build on first search');
+        console.log('[KioskSearch] Injected');
         return true;
     }
 
@@ -476,11 +741,7 @@
         });
 
         input.addEventListener('keydown', e => {
-            // Block all physical keyboard input — virtual keyboard only
-            if (!e._fromVirtualKeyboard) {
-                e.preventDefault();
-                return;
-            }
+            if (!e._fromVirtualKeyboard) { e.preventDefault(); return; }
             if (e.key === 'Escape') {
                 input.value = '';
                 clearBtn.style.display = 'none';
@@ -498,136 +759,33 @@
         const s = document.createElement('style');
         s.id = 'ks-styles';
         s.textContent = `
-#ks-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-    max-width: 420px;
-    margin: 0 16px;
-}
-#ks-inner {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-    background: #f5f5f5;
-    border: 1.5px solid #e0e0e0;
-    border-radius: 999px;
-    padding: 0 14px;
-    height: 40px;
-    transition: border-color .18s, box-shadow .18s, background .18s;
-}
-#ks-bar.ks-focused #ks-inner {
-    border-color: var(--primary, #D3281B);
-    background: #fff;
-    box-shadow: 0 0 0 3px rgba(211,40,27,.12);
-}
-#ks-icon {
-    color: #aaa;
-    flex-shrink: 0;
-    transition: color .18s;
-}
+#ks-bar { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 420px; margin: 0 16px; }
+#ks-inner { display: flex; align-items: center; gap: 8px; flex: 1; background: #f5f5f5; border: 1.5px solid #e0e0e0; border-radius: 999px; padding: 0 14px; height: 40px; transition: border-color .18s, box-shadow .18s, background .18s; }
+#ks-bar.ks-focused #ks-inner { border-color: var(--primary, #D3281B); background: #fff; box-shadow: 0 0 0 3px rgba(211,40,27,.12); }
+#ks-icon { color: #aaa; flex-shrink: 0; transition: color .18s; }
 #ks-bar.ks-focused #ks-icon { color: var(--primary, #D3281B); }
-#ks-input {
-    flex: 1;
-    border: none;
-    background: transparent;
-    font-size: 16px; /* must be >=16px to prevent iOS auto-zoom */
-    color: #222;
-    outline: none;
-    box-shadow: none;
-    padding: 0;
-    height: 100%;
-    min-width: 0;
-    font-family: inherit;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    transform-origin: left center;
-}
+#ks-input { flex: 1; border: none; background: transparent; font-size: 16px; color: #222; outline: none; box-shadow: none; padding: 0; height: 100%; min-width: 0; font-family: inherit; text-transform: uppercase; letter-spacing: 0.05em; }
 #ks-input::placeholder { color: #bbb; }
-#ks-input::-webkit-search-cancel-button { display: none; }
-#ks-clear {
-    display: none;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    border: none;
-    background: #ddd;
-    color: #666;
-    cursor: pointer;
-    flex-shrink: 0;
-    padding: 0;
-    transition: background .15s;
-}
+#ks-clear { display: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; border: none; background: #ddd; color: #666; cursor: pointer; flex-shrink: 0; padding: 0; transition: background .15s; }
 #ks-clear:hover { background: var(--primary, #D3281B); color: #fff; }
-#ks-count {
-    font-size: 11px;
-    color: #999;
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-#menuGrid mark {
-    background: rgba(211,40,27,.13);
-    color: inherit;
-    border-radius: 2px;
-    padding: 0 1px;
-}
-
-/* ── Mobile / portrait kiosk responsive ── */
+#ks-count { font-size: 11px; color: #999; white-space: nowrap; flex-shrink: 0; }
+#menuGrid mark { background: rgba(211,40,27,.13); color: inherit; border-radius: 2px; padding: 0 1px; }
 @media (max-width: 600px) {
-    #ks-bar {
-        flex: 0 0 auto;
-        width: 110px;
-        min-width: 0;
-        margin: 0 3px;
-    }
-    #ks-inner {
-        height: 28px;
-        padding: 0 7px;
-        gap: 4px;
-        width: 100%;
-    }
-    #ks-input {
-        font-size: 16px; /* keep 16px — iOS zooms when < 16px */
-        min-width: 0;
-        width: 0;
-        flex: 1;
-        transform: scale(0.75);
-        transform-origin: left center;
-    }
-    #ks-input::placeholder {
-        opacity: 0.6;
-    }
-    #ks-icon {
-        width: 11px;
-        height: 11px;
-        flex-shrink: 0;
-    }
-    #ks-count {
-        display: none;
-    }
-    #ks-clear {
-        width: 15px;
-        height: 15px;
-        flex-shrink: 0;
-        padding: 0;
-    }
-}
-        `;
+    #ks-bar { flex: 0 0 auto; width: 110px; min-width: 0; margin: 0 3px; }
+    #ks-inner { height: 28px; padding: 0 7px; gap: 4px; width: 100%; }
+    #ks-input { font-size: 16px; min-width: 0; width: 0; flex: 1; transform: scale(0.75); transform-origin: left center; }
+    #ks-input::placeholder { opacity: 0.6; }
+    #ks-icon { width: 11px; height: 11px; flex-shrink: 0; }
+    #ks-count { display: none; }
+    #ks-clear { width: 15px; height: 15px; flex-shrink: 0; padding: 0; }
+}`;
         document.head.appendChild(s);
     }
-
-    // ─── AUTO-INJECT & HOOKS ──────────────────────────────────────────────────
 
     function tryInject() {
         if (document.getElementById('ks-bar')) return;
         if (!inject()) {
-            const obs = new MutationObserver(() => {
-                if (inject()) obs.disconnect();
-            });
+            const obs = new MutationObserver(() => { if (inject()) obs.disconnect(); });
             obs.observe(document.body, { childList: true, subtree: true });
         }
     }
@@ -638,8 +796,7 @@
         setTimeout(tryInject, 200);
     }
 
-    // After selectOrderType finishes (menu + FullItems loaded), re-inject
-    // and invalidate pool so next search uses fresh data
+    // Invalidate pool when order type changes
     const _origSOT = window.selectOrderType;
     if (typeof _origSOT === 'function') {
         window.selectOrderType = async function (...args) {
@@ -650,7 +807,6 @@
         };
     }
 
-    // Public API
     window.KioskSearch = {
         inject: tryInject,
         search,
@@ -662,411 +818,166 @@
 
 })();
 
-// ─── VIRTUAL KEYBOARD ────────────────────────────────────────────────────────
-// On-screen keyboard for kiosk touch screens.
-// Appears below the header when the search input is focused.
-// Dismissed by tapping X, pressing Escape, or tapping outside.
 
-(function initVirtualKeyboard() {
+// ─── VIRTUAL KEYBOARD ────────────────────────────────────────────────────────
+(function () {
     'use strict';
 
     const LAYOUTS = {
         default: [
             ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
             ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
-            ['Z', 'X', 'C', 'V', 'B', 'N', 'M', '⌫'],
-            ['123', 'space', '⏎']
+            ['Z', 'X', 'C', 'V', 'B', 'N', 'M', '\u232b'],
+            ['123', 'space', '\u23ce'],
         ],
         numbers: [
             ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
             ['-', '/', ':', ';', '(', ')', '$', '&', '@', '"'],
-            ['#+=', '.', '·', ',', '?', '!', '\'', '⌫'],
-            ['ABC', 'space', '⏎']
+            ['#+=', '.', '\u00b7', ',', '?', '!', '\'', '\u232b'],
+            ['ABC', 'space', '\u23ce'],
         ],
         symbols: [
             ['[', ']', '{', '}', '#', '%', '^', '*', '+', '='],
-            ['_', '\\', '|', '~', '<', '>', '€', '£', '¥', '·'],
-            ['123', '.', '·', ',', '?', '!', '\'', '⌫'],
-            ['ABC', 'space', '⏎']
-        ]
+            ['_', '\\', '|', '~', '<', '>', '\u20ac', '\u00a3', '\u00a5', '\u00b7'],
+            ['123', '.', '\u00b7', ',', '?', '!', '\'', '\u232b'],
+            ['ABC', 'space', '\u23ce'],
+        ],
     };
 
     let _layout = 'default';
-    let _shift = false;
     let _kb = null;
     let _input = null;
-    let _visible = false;
 
     function createKeyboard() {
-        if (document.getElementById('vk-overlay')) return;
+        if (document.getElementById('vk-board')) return;
 
-        // Overlay (transparent, catches outside taps)
         const overlay = document.createElement('div');
         overlay.id = 'vk-overlay';
-        overlay.addEventListener('mousedown', e => {
-            if (!document.getElementById('vk-board').contains(e.target) &&
-                e.target !== _input) {
-                hide();
-            }
+        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999998;display:none;';
+        overlay.addEventListener('pointerdown', e => {
+            if (_kb && !_kb.contains(e.target) && e.target !== _input) hide();
         });
         document.body.appendChild(overlay);
 
-        // Keyboard board
         const board = document.createElement('div');
         board.id = 'vk-board';
         board.setAttribute('aria-label', 'Virtual keyboard');
+        board.addEventListener('mousedown', e => e.preventDefault());
         document.body.appendChild(board);
 
-        // Prevent keyboard taps from stealing focus from input
-        // Only preventDefault on mousedown (desktop), NOT touchstart (breaks touchscreen)
-        board.addEventListener('mousedown', e => e.preventDefault());
-
-        injectKbStyles();
+        injectStyles();
         _kb = board;
         renderLayout();
     }
 
     function renderLayout() {
         if (!_kb) return;
-        const rows = LAYOUTS[_layout];
         _kb.innerHTML = '';
 
-        rows.forEach(row => {
+        for (const row of LAYOUTS[_layout]) {
             const rowEl = document.createElement('div');
             rowEl.className = 'vk-row';
 
-            row.forEach(key => {
+            for (const key of row) {
                 const btn = document.createElement('button');
                 btn.className = 'vk-key';
                 btn.type = 'button';
                 btn.setAttribute('data-key', key);
 
-                // Apply special class
-                if (key === '⌫') btn.classList.add('vk-backspace');
-                else if (key === '⇧') { btn.classList.add('vk-shift'); if (_shift) btn.classList.add('vk-shift-active'); }
-                else if (key === 'space') { btn.classList.add('vk-space'); btn.textContent = ''; }
-                else if (key === '⏎') btn.classList.add('vk-enter');
-                else if (key === '123' || key === 'ABC' || key === '#+=') btn.classList.add('vk-fn');
-                else btn.textContent = key;
+                switch (key) {
+                    case '\u232b':
+                        btn.classList.add('vk-backspace');
+                        btn.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>`;
+                        break;
+                    case 'space':
+                        btn.classList.add('vk-space');
+                        break;
+                    case '\u23ce':
+                        btn.classList.add('vk-enter');
+                        btn.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>`;
+                        break;
+                    case '123': case 'ABC': case '#+=':
+                        btn.classList.add('vk-fn');
+                        btn.textContent = key;
+                        break;
+                    default:
+                        btn.textContent = key;
+                }
 
-                if (key === '⌫') btn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>`;
-                if (key === '⏎') btn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>`;
-                if (key === '⇧') btn.innerHTML = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="17 11 12 6 7 11"/><line x1="12" y1="6" x2="12" y2="18"/></svg>`;
-                if (key === '123') btn.textContent = '123';
-                if (key === 'ABC') btn.textContent = 'ABC';
-                if (key === '#+=') btn.textContent = '#+=';
-
-                btn.addEventListener('click', () => handleKey(key));
-
-                // touchstart — instant visual feedback (press down feeling)
-                btn.addEventListener('touchstart', e => {
-                    e.stopPropagation();
-                    btn.classList.add('vk-pressed');
-                }, { passive: true });
-
-                // touchend — fire key + remove press state
-                btn.addEventListener('touchend', e => {
-                    e.preventDefault();
-                    btn.classList.remove('vk-pressed');
-                    handleKey(key);
-                }, { passive: false });
-
-                // touchcancel — clean up if touch is interrupted
-                btn.addEventListener('touchcancel', () => {
-                    btn.classList.remove('vk-pressed');
-                });
+                btn.addEventListener('click', e => { e.preventDefault(); handleKey(key); });
                 rowEl.appendChild(btn);
-            });
+            }
 
             _kb.appendChild(rowEl);
-        });
+        }
     }
 
     function handleKey(key) {
         if (!_input) return;
 
-        if (key === '⌫') {
-            const pos = _input.selectionStart;
-            if (pos > 0) {
-                const val = _input.value;
-                _input.value = val.slice(0, pos - 1) + val.slice(pos);
-                _input.setSelectionRange(pos - 1, pos - 1);
-            }
-        } else if (key === 'space') {
-            insertAt(_input, ' ');
-        } else if (key === '⏎') {
-            hide();
-        } else if (key === '123') {
-            _layout = 'numbers';
-            renderLayout();
-            return;
-        } else if (key === '#+=') {
-            _layout = 'symbols';
-            renderLayout();
-            return;
-        } else if (key === 'ABC') {
-            _layout = 'default';
-            _shift = false;
-            renderLayout();
-            return;
-        } else {
-            insertAt(_input, key.toUpperCase());
-            // Auto-lowercase after one shifted character
-            if (_shift) {
-                _shift = false;
-                _layout = 'default';
-                renderLayout();
-            }
+        const pos = _input.selectionStart;
+        const val = _input.value;
+
+        switch (key) {
+            case '\u232b':
+                if (pos > 0) {
+                    _input.value = val.slice(0, pos - 1) + val.slice(pos);
+                    _input.setSelectionRange(pos - 1, pos - 1);
+                }
+                break;
+            case 'space':
+                _input.value = val.slice(0, pos) + ' ' + val.slice(pos);
+                _input.setSelectionRange(pos + 1, pos + 1);
+                break;
+            case '\u23ce':
+                hide(); return;
+            case '123':
+                _layout = 'numbers'; renderLayout(); return;
+            case 'ABC':
+                _layout = 'default'; renderLayout(); return;
+            case '#+=':
+                _layout = 'symbols'; renderLayout(); return;
+            default:
+                _input.value = val.slice(0, pos) + key + val.slice(pos);
+                _input.setSelectionRange(pos + 1, pos + 1);
         }
 
-        // Trigger input event so search fires — marked so keydown block allows it
-        const vkEvent = new Event('input', { bubbles: true });
-        vkEvent._fromVirtualKeyboard = true;
-        _input.dispatchEvent(vkEvent);
-        // Re-focus without scrolling — prevents page jump on touchscreen
-        _input.focus({ preventScroll: true });
-    }
-
-    function insertAt(el, text) {
-        const start = el.selectionStart;
-        const end = el.selectionEnd;
-        el.value = el.value.slice(0, start) + text + el.value.slice(end);
-        el.setSelectionRange(start + text.length, start + text.length);
+        _input.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
     function show(inputEl) {
         _input = inputEl;
-        // Remove readonly so virtual keyboard can write to the field
-        _input.removeAttribute('readonly');
-        if (!_kb) createKeyboard();
-        _layout = 'default';
-        _shift = false;
-        renderLayout();
-
-        const overlay = document.getElementById('vk-overlay');
-        if (overlay) overlay.style.display = 'block';
-        _kb.classList.add('vk-visible');
-        _kb.style.display = 'flex';
-        _visible = true;
-
-        // Push page content up so keyboard doesn't cover the menu grid
-        document.querySelector('.main-content')?.style.setProperty(
-            'padding-bottom', (_kb.offsetHeight + 12) + 'px'
-        );
+        createKeyboard();
+        document.getElementById('vk-overlay').style.display = 'block';
+        _kb.classList.add('vk-show');
     }
 
     function hide() {
-        if (!_visible) return;
-        _visible = false;
-
+        _kb?.classList.remove('vk-show');
         const overlay = document.getElementById('vk-overlay');
         if (overlay) overlay.style.display = 'none';
-        if (_kb) {
-            _kb.classList.remove('vk-visible');
-            _kb.style.display = 'none';
-        }
-        // Restore readonly so Windows touch keyboard won't appear on next tap
-        if (_input) _input.setAttribute('readonly', true);
-        // Remove extra padding
-        document.querySelector('.main-content')?.style.removeProperty('padding-bottom');
+        _layout = 'default';
     }
 
-    // Hook into the search input once it's injected
-    function hookInput() {
-        const input = document.getElementById('ks-input');
-        if (!input || input._vkHooked) return;
-        input._vkHooked = true;
-
-        input.addEventListener('focus', () => show(input));
-        // Don't hide on blur — blur fires when user taps a key (mousedown steals focus momentarily)
-        // Instead we hide on overlay tap or clear/escape (handled above)
-
-        console.log('[VirtualKeyboard] ✅ Hooked to #ks-input');
-    }
-
-    // Wait for #ks-input to appear
-    function waitForInput() {
-        if (document.getElementById('ks-input')) {
-            hookInput();
-        } else {
-            const obs = new MutationObserver(() => {
-                if (document.getElementById('ks-input')) {
-                    hookInput();
-                    obs.disconnect();
-                }
-            });
-            obs.observe(document.body, { childList: true, subtree: true });
-        }
-    }
-
-    // Also hide keyboard when clear button or escape is used
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
-    document.addEventListener('click', e => {
-        if (e.target.id === 'ks-clear') hide();
-    });
-
-    function injectKbStyles() {
+    function injectStyles() {
         if (document.getElementById('vk-styles')) return;
         const s = document.createElement('style');
         s.id = 'vk-styles';
         s.textContent = `
-#vk-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    z-index: 8998;
-    background: transparent;
-}
-#vk-board {
-    display: none;
-    flex-direction: column;
-    gap: 12px;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 8999;
-    background: #d1d5db;
-    padding: 20px 16px 32px;
-    box-shadow: 0 -6px 32px rgba(0,0,0,0.22);
-    border-top: 1px solid #b0b5be;
-    transform: translateY(100%);
-    transition: transform 0.22s cubic-bezier(0.4,0,0.2,1);
-}
-#vk-board.vk-visible {
-    transform: translateY(0);
-}
-.vk-row {
-    display: flex;
-    justify-content: center;
-    gap: 10px;
-}
-.vk-key {
-    height: 72px;
-    min-width: 56px;
-    flex: 1;
-    max-width: 96px;
-    background: #fff;
-    border: none;
-    border-radius: 10px;
-    font-size: 26px;
-    font-weight: 500;
-    color: #111;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 3px 0 #9ca3af;
-    transition: background 0.08s, transform 0.08s;
-    user-select: none;
-    -webkit-user-select: none;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
-.vk-key:active,
-.vk-key.vk-pressed {
-    background: #d0d0d0;
-    transform: translateY(2px);
-    box-shadow: 0 1px 0 #9ca3af;
-}
-.vk-backspace.vk-pressed,
-.vk-shift.vk-pressed,
-.vk-fn.vk-pressed {
-    background: #6b7280;
-}
-.vk-enter.vk-pressed {
-    background: #b91c1c;
-    transform: translateY(2px);
-    box-shadow: 0 1px 0 #7f1d1d;
-}
-.vk-shift-active.vk-pressed {
-    background: #b91c1c;
-}
-.vk-backspace,
-.vk-shift,
-.vk-fn {
-    background: #9ca3af;
-    color: #111;
-    font-size: 18px;
-    flex: 1.5;
-    max-width: 112px;
-}
-.vk-shift-active {
-    background: var(--primary, #D3281B);
-    color: #fff;
-}
-.vk-shift-active svg { stroke: #fff; }
-.vk-space {
-    flex: 5;
-    max-width: 480px;
-    background: #fff;
-    border-radius: 10px;
-}
-.vk-enter {
-    background: var(--primary, #D3281B);
-    color: #fff;
-    flex: 2;
-    max-width: 140px;
-}
-.vk-enter svg { stroke: #fff; }
-
-/* ── Mobile / portrait kiosk keyboard ── */
-@media (max-width: 600px) {
-    #vk-board {
-        padding: 10px 6px 16px;
-        gap: 7px;
-    }
-    .vk-row {
-        gap: 5px;
-    }
-    .vk-key {
-        height: 52px;
-        min-width: 28px;
-        max-width: 999px;
-        font-size: 20px;
-        border-radius: 7px;
-        box-shadow: 0 2px 0 #9ca3af;
-    }
-    .vk-backspace,
-    .vk-shift,
-    .vk-fn {
-        font-size: 13px;
-        flex: 1.3;
-    }
-    .vk-space {
-        flex: 4;
-    }
-    .vk-enter {
-        flex: 1.6;
-    }
-    .vk-key svg {
-        width: 20px;
-        height: 20px;
-    }
-}
-
-/* ── Tablet / landscape kiosk keyboard ── */
-@media (min-width: 601px) and (max-width: 1024px) {
-    #vk-board {
-        padding: 14px 12px 22px;
-        gap: 10px;
-    }
-    .vk-row { gap: 8px; }
-    .vk-key {
-        height: 62px;
-        font-size: 28px;
-    }
-}
-        `;
+#vk-board { position: fixed; bottom: 0; left: 0; width: 100vw; background: #222; padding: 12px 0; box-sizing: border-box; z-index: 999999; display: flex; flex-direction: column; gap: 8px; transform: translateY(100%); transition: transform .25s ease-out; }
+#vk-board.vk-show { transform: translateY(0); }
+.vk-row { display: flex; justify-content: center; width: 100%; gap: 6px; padding: 0 8px; box-sizing: border-box; }
+.vk-key { flex: 1; max-width: 54px; height: 48px; background: #444; color: #fff; border: none; border-radius: 6px; font-size: 18px; font-weight: 600; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; }
+.vk-key:active { background: #666; }
+.vk-space { flex: 4; max-width: 280px; }
+.vk-enter { background: var(--primary, #D3281B); flex: 1.5; max-width: 80px; }
+.vk-backspace { background: #555; flex: 1.5; max-width: 80px; }
+.vk-fn { background: #333; font-size: 14px; flex: 1.2; }`;
         document.head.appendChild(s);
     }
 
-    // Export
-    window.VirtualKeyboard = { show, hide, isVisible: () => _visible };
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', waitForInput);
-    } else {
-        waitForInput();
-    }
+    document.body.addEventListener('focusin', e => {
+        if (e.target?.id === 'ks-input') show(e.target);
+    });
 
 })();

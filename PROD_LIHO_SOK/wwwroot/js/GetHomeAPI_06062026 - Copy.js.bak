@@ -81,11 +81,10 @@ import {
     clearCart,
     takeaway
 } from '../utils/tqr.js';
-import { getPriceByServiceType, applyPromotions, getNewOrder, getNewOrderSOK, addTax, calcOrderAmt, getSysSetting, isAbsorbTax, getAvailableServiceTypes } from '../utils/pos.js';
+import { getPriceByServiceType, applyPromotions, getNewOrder, getNewOrderSOK, addTax, calcOrderAmt } from '../utils/pos.js';
 import { getNowInAPIFormat } from '../utils/common.js';
 import { showAddOnModal, showWizardModal, scrollModalToTop, MENU_CONFIG, setMenuRenderingMode } from './Home.js';
 import { renderCartFromOrder, showErrorModal, closeErrorModal, showSuccessModal, closeModal } from './renderCartFromOrder.js';
-import { clearLocalImageCache } from './ImageCache.js'; // adjust path
 
 // ─── SESSION STORAGE KEY ──────────────────────────────────────────────────────
 // Single key for menu persistence across page reloads and post-order returns.
@@ -108,13 +107,12 @@ const selectedLang = sessionStorage.getItem("selectedLang");
 const orderType = localStorage.getItem("orderType");
 window.__isReload = performance.getEntriesByType("navigation")[0]?.type === "reload";
 
-
 // ─── FIX 1: Pre-parse AvailablePOSMenuItems ONCE at startup ──────────────────
 // Previously parsed inside shouldShowItem() on every single item call.
 // Now built once into fast O(1) lookup maps.
 function buildItemAvlMapFromLocalStorage() {
     try {
-        const raw = sessionStorage.getItem('AvailablePOSMenuItems');
+        const raw = localStorage.getItem('AvailablePOSMenuItems');
         if (!raw) return;
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return;
@@ -231,7 +229,7 @@ async function initializeDeviceId() {
     let deviceId = getDeviceIdFromUrl();
     if (!deviceId) deviceId = storage.getItem("sok_device_id");
     if (!deviceId) {
-        deviceId = `KIOSK_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        deviceId = `KIOSK_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         console.log('🆕 Generated fallback device ID:', deviceId);
     } else {
         console.log('✅ Using device ID:', deviceId);
@@ -580,7 +578,6 @@ export async function loadMenuItems() {
 export function invalidateMenuCache() {
     sessionStorage.removeItem(MENU_CACHE_KEY);
     apiManager.clearCache('menuItems');
-    clearLocalImageCache();
     console.log('🗑️ Menu cache invalidated');
 }
 
@@ -805,38 +802,20 @@ async function initializeApp() {
             console.log(`🔄 Mode: ${isWarm ? 'WARM BOOT' : 'COLD BOOT'}`);
 
             if (!isWarm) {
+                // ── COLD BOOT ──────────────────────────────────────────────
                 setBootStatus('Connecting to server…');
                 await loadStoreDetails();
 
                 setBootStatus('Loading store settings…');
                 await Promise.all([loadSvcs(), loadStoreSetting(), loadgetStoreRegisterPrinter()]);
-                //loadLangs();
+
                 setBootStatus('Loading menu…');
-
-                // ✅ Store the promise BEFORE awaiting it so _doLoadAndRenderMenu can join it
-                // if selectOrderType fires while it's still in-flight (fast user tap)
-                window._fullItemsPromise = loadItems().catch(e => {
-                    console.warn('⚠️ FullItems preload failed:', e);
-                    return [];
-                });
-
-                await Promise.all([
-                    loadMenuItems(),
-                    window._fullItemsPromise,   // await but DON'T null it after
-                    loadMenuAvailability(),
-                    loadSystemSetting()
-                ]);
-
-                // ✅ DO NOT null _fullItemsPromise here — it's already resolved so
-                // _doLoadAndRenderMenu awaiting it is instant (no network cost).
-                // It acts as a resolved sentinel so _doLoadAndRenderMenu knows
-                // FullItems are ready without polling.
+                await Promise.all([loadMenuItems(), loadItems(), loadMenuAvailability(), loadSystemSetting()]);
 
                 const rawAvailResponse = apiManager.loadedData.get('menuAvailability');
                 const availData = parseAvailabilityResponse(rawAvailResponse);
                 if (availData.length > 0) {
-                    // ✅ Write to sessionStorage to match buildItemAvlMapFromLocalStorage's read path
-                    sessionStorage.setItem('AvailablePOSMenuItems', JSON.stringify(availData));
+                    localStorage.setItem('AvailablePOSMenuItems', JSON.stringify(availData));
                     const { categoryAvlMap, itemAvlMap } = buildAvailabilityMaps(availData);
                     window.categoryAvlMap = categoryAvlMap;
                     window.itemAvlMap = itemAvlMap;
@@ -848,28 +827,16 @@ async function initializeApp() {
                 }
 
             } else {
+                // ── WARM BOOT ──────────────────────────────────────────────
                 setBootStatus('Restoring session…');
                 window.__isWarmBoot = true;
                 sessionStorage.setItem('skip_api_on_load', 'true');
                 if (!localStorage.getItem('orderType')) localStorage.setItem('orderType', 'E');
 
-                // ✅ 1. Initial fall-back build from cache
+                // ✅ Rebuild availability maps
                 buildItemAvlMapFromLocalStorage();
 
-                // ✅ 2. Fetch fresh availability
-                try {
-                    await getPOSMenuAvailableItems();
-                    console.log('✅ [Warm Boot] Availability refreshed from server');
-
-                    // 🔥 CRITICAL RE-MAP PATCH: Rebuild your memory maps now that sessionStorage has been updated!
-                    console.log('🗂️ [Warm Boot] Re-mapping lookup tables with live server data...');
-                    buildItemAvlMapFromLocalStorage();
-
-                } catch (err) {
-                    console.warn('⚠️ [Warm Boot] Availability fetch failed, using cached map:', err);
-                }
-
-                // ✅ Item restore — separate try/catch from availability fetch
+                // ✅ Restore compressed items into cache (runs ONCE)
                 try {
                     const compressed = sessionStorage.getItem('FullItems');
                     if (compressed && typeof LZString !== 'undefined') {
@@ -881,27 +848,22 @@ async function initializeApp() {
                                 apiManager.loadedData.set('items', items);
                                 apiManager.loadingStates.set('items', 'success');
                                 console.log('✅ [Warm Boot] Items restored:', items.length);
-
-                                // ✅ Expose as a resolved promise so _doLoadAndRenderMenu
-                                // takes the fast path without polling
-                                window._fullItemsPromise = Promise.resolve(items);
                             }
                         }
                     } else {
                         console.warn('⚠️ [Warm Boot] No compressed items — fetching fresh');
-                        window._fullItemsPromise = loadItems().catch(() => []);
-                        await window._fullItemsPromise;
+                        await loadItems();
                     }
                 } catch (err) {
                     console.error('❌ [Warm Boot] Item restore failed:', err);
-                    window._fullItemsPromise = loadItems().catch(() => []);
-                    await window._fullItemsPromise;
+                    await loadItems();
                 }
 
+                // ✅ Also restore menu items if available
                 try {
                     const menuData = apiManager.loadedData.get('menuItems');
                     if (!menuData) {
-                        await loadMenuItems();
+                        await loadMenuItems(); // reads from sessionStorage, not network
                     }
                 } catch (err) {
                     console.warn('⚠️ [Warm Boot] Menu restore failed:', err);
@@ -1070,392 +1032,190 @@ function debouncedUpdateCartCount() {
     }, 80);
 }
 
-
-/**
- * After menu renders, patch any category icons that loaded with wrong/fallback src.
- * Matches preloaded URLs back to their category tab images by category code.
- */
-function patchCategoryImages() {
-    // Get all preloaded image URLs from <link rel="preload"> tags
-    const preloadedUrls = Array.from(
-        document.querySelectorAll('link[rel="preload"][as="image"]')
-    ).map(l => l.href);
-
-    if (!preloadedUrls.length) return;
-
-    // Get raw category data which has the image URLs
-    const rawMenuData =
-        window.apiManager?.loadedData?.get('menuItems') ||
-        window.apiManager?.loadedData?.get('MenuItems') || [];
-
-    const rawCats = rawMenuData.flatMap(s => s.category || []);
-
-    rawCats.forEach(cat => {
-        const code = cat.category_code;
-        if (!code) return;
-
-        const rawUrl = toProxyUrl(
-            cat.tqr_cat_image_url ||
-            cat.tqr_image_url ||
-            cat.cat_image_url ||
-            cat.image_url ||
-            null
-        );
-        if (!rawUrl) return;
-
-        // Find the category tab button for this code
-        const btn = document.querySelector(
-            `.category-tab[data-category="${code}"], .subcategory-tab[data-category="${code}"]`
-        );
-        if (!btn) return;
-
-        const img = btn.querySelector('.category-icon, .subcategory-icon');
-        if (!img) return;
-
-        // Only patch if currently showing fallback/wrong image
-        const currentSrc = img.src || '';
-        const isShowingFallback =
-            currentSrc.includes('liHO-SG-Logo') ||
-            currentSrc.includes('LIHO-logo') ||
-            currentSrc.includes('Logo.png') ||
-            currentSrc === '' ||
-            img.style.display === 'none';
-
-        if (isShowingFallback && rawUrl) {
-            console.log(`🔧 Patching category image: ${code}`);
-            img.style.display = '';
-            img.src = rawUrl;
-        }
-    });
-}
-
 // ─── FIX 4: selectOrderType — non-blocking session refresh ───────────────────
 // Previously awaited GetDeviceSession before starting menu load.
 // Now fires it in the background and jumps straight to loadAndRenderMenu.
 // Also pre-warms menu data on landing show so the tap itself is near-instant.
 export async function selectOrderType(type, language = 'en') {
-    window._selectStart = performance.now();
     window.isSelectingOrderType = true;
-    window._pendingOrderType = type; // ← set before any awaits so isAbsorbTax can read it
     console.log('🎯 selectOrderType called:', { type, language });
 
     if (!type || (type !== 'T' && type !== 'E' && type !== 'Q')) {
         console.error('❌ Invalid order type:', type);
         window.isSelectingOrderType = false;
-        window._pendingOrderType = null;
         return;
     }
 
+    const landingOverlay = document.getElementById('landingOverlay');
+    if (landingOverlay) {
+        landingOverlay.style.opacity = '0';
+        setTimeout(() => {
+            landingOverlay.classList.add('hidden');
+            if (window.sokWebSocket) {
+                window.sokWebSocket.stopSessionTimeout();
+                window.sokWebSocket.startSessionTimeout();
+                console.log("⏱️ Session timeout started — order type selected:", type);
+            }
+        }, 500);
+    }
+
     try {
-        // ── 1. INSTANT: visual feedback + overlay fade — no awaits yet ─patchCategoryImages─────
+        localStorage.setItem("orderType", type);
+
+        // ✅ Visual feedback (from V1)
         const selectedOption = document.querySelector(`.landing-option[data-type="${type}"]`);
         if (selectedOption) {
             selectedOption.style.transform = 'scale(0.94)';
             selectedOption.style.filter = 'brightness(0.9)';
         }
 
-        const landingOverlay = document.getElementById('landingOverlay');
-        if (landingOverlay) {
-            landingOverlay.style.opacity = '0';
-            setTimeout(() => {
-                landingOverlay.classList.add('hidden');
-                if (window.sokWebSocket) {
-                    window.sokWebSocket.stopSessionTimeout();
-                    window.sokWebSocket.startSessionTimeout();
-                    console.log('⏱️ Session timeout started — order type selected:', type);
-                }
-            }, 500);
-        }
-
-        // ── 2. Fire all non-blocking work immediately ────────────────────────
-        await loadgetStoreRegisterPrinter();
-
-        fetch('/API/GetDeviceSession', {
-            method: 'GET', cache: 'no-store',
-            headers: { 'Content-Type': 'application/json' },
-        })
+        // ✅ Background session refresh (from V1)
+        fetch('/API/GetDeviceSession', { method: 'GET', cache: 'no-store', headers: { 'Content-Type': 'application/json' } })
             .then(async res => {
-                if (!res.ok) return;
-                const data = await res.json();
-                const sid = data?.session_id || data?.sessionId || data?.SessionId;
-                if (sid) sessionStorage.setItem('device_session_id', sid);
-                console.log('✅ Device session refreshed (background)');
+                if (res.ok) {
+                    const data = await res.json();
+                    const sid = data?.session_id || data?.sessionId || data?.SessionId;
+                    if (sid) sessionStorage.setItem('device_session_id', sid);
+                    console.log('✅ Device session refreshed (background)');
+                }
             })
             .catch(err => console.warn('⚠️ Device session refresh error (non-fatal):', err.message));
 
-        // ── 3. Await init only if needed — runs while overlay is already fading
+        loadgetStoreRegisterPrinter();
+
         if (!window.isInitialized && !window.isInitializing) {
             await initializeApp();
-        } else if (window.isInitializing) {
-            await window.initPromise;
+        } else {
+            console.log('⏭️ selectOrderType: initializeApp already done, skipping');
         }
 
-        // ── 4. Set AFTER initializeApp — restoreCacheAfterReload wipes localStorage during init
-        localStorage.setItem('orderType', type);
+        // ✅ CRM session sync (from V2)
+        if (typeof window.checkMemberSession === 'function') {
+            console.log("🚀 Syncing Ascentis CRM member session...");
+            await window.checkMemberSession();
+        }
 
+        // ✅ Service charge
         const serviceCharges = JSON.parse(sessionStorage.getItem('ServiceChargeJs') || '[]');
         const svcLookupType = (type === 'Q' || type === 'E') ? 'E' : 'T';
         const matchedSvc = serviceCharges.find(s => s.service_type === svcLookupType);
         sessionStorage.setItem('ServiceCharge', matchedSvc ? matchedSvc.service_value : 0);
 
-        // service_type is just `type` here — already set in localStorage above
-        const service_type = type;
+        // ✅ Tax flag — V2's IsAbsorbTax approach is more reliable
+        const storedAbsorb = sessionStorage.getItem("absorb_tax");
+        const menuTaxFlag = (storedAbsorb === "1" || storedAbsorb === 1) ? "Y" : "N";
 
-        const service_type_info = SERVICE_TYPES
-            ?.find(item => item?.service_type === service_type)
-            ?.service_type_info;
+        // ✅ Member identity (from V2)
+        const memberInfo = JSON.parse(localStorage.getItem('member_info') || 'null');
+        const customerCode = memberInfo?.customer_code || "";
 
-        // isAbsorbTax reads window._pendingOrderType as fallback when
-        // activeOrder.service_type and localStorage are not yet set
-        const menuTaxFlag = isAbsorbTax() ? 'Y' : 'N';
         const orderStore = window.useOrderStore?.getState();
+        const currentStoredType = orderStore?.service_type;
+        const hasExistingItems = orderStore?.sales_dtls?.length > 0;
         const isColdBoot = !window._orderTypeSelected;
-        const isSameType = !isColdBoot
-            && orderStore?.service_type === type
-            && orderStore?.sales_dtls?.length > 0;
+        const isSameType = !isColdBoot && (currentStoredType === type) && hasExistingItems;
+        const serviceTypeInfo = type === 'T' ? 'Takeaway' : (type === 'Q' ? 'QR Order' : 'DineIn');
 
-        const getMemberInfo = () => {
-            try {
-                const raw = localStorage.getItem('member_info') || localStorage.getItem('memberInfo');
-                return raw ? JSON.parse(raw) : null;
-            } catch { return null; }
-        };
-
-        // ── 5. Build order — getNewOrderSOK is synchronous, completes immediately
         let activeOrder;
-
         if (isSameType) {
-            console.log('♻️ Restoring existing draft');
-            const m = getMemberInfo();
+            console.log("♻️ Restoring existing draft with member:", customerCode);
             activeOrder = {
                 ...orderStore,
                 service_type: type,
                 absorb_tax: menuTaxFlag,
-                customer_code: m?.customer_code || orderStore?.customer_code || '',
-                customer_name: m?.name || m?.Name || orderStore?.customer_name || '',
-                contact_no: m?.phone || m?.MobileNo || orderStore?.contact_no || '',
-                email: m?.email || m?.Email || orderStore?.email || '',
+                service_type_info: serviceTypeInfo,
+                customer_code: customerCode,
             };
         } else {
-            console.log(isColdBoot ? '❄️ Cold boot: Creating fresh order' : '🔄 Type mismatch: Wiping old data');
-            localStorage.removeItem('orderId');
-            localStorage.removeItem('active_cart');
+            console.log(isColdBoot ? "❄️ Cold boot" : "🔄 Type Mismatch: Wiping old data");
+            localStorage.removeItem("orderId");
+            localStorage.removeItem("active_cart");
 
-            const m = getMemberInfo();
-            console.log('👤 Member at order creation:', {
-                found: !!m,
-                customer_code: m?.customer_code,
-                card_no: m?.card_no || m?.CardNo,
-                name: m?.name || m?.Name,
-            });
-
-            // getNewOrderSOK is synchronous — result is ready on the next line
             activeOrder = getNewOrderSOK({
+                customer_code: customerCode,
+                table_no: "",
                 service_type: type,
-                service_type_info,
-                customer_code: m?.customer_code || '',
-                customer_name: m?.name || m?.Name || '',
-                contact_no: m?.phone || m?.MobileNo || '',
-                email: m?.email || m?.Email || '',
-                card_no: m?.card_no || m?.CardNo || '',
-                table_no: '',
+                service_type_info: serviceTypeInfo,
+                absorb_tax: menuTaxFlag, // ✅ from V2
             });
 
-            window.useOrderStore?.setState({
-                orderId: null,
-                sales_dtls: [],
-                net_amt: 0,
-                sub_total: 0,
-                total_tax: 0,
-                lastSNo: 0,
-                service_type: type,
-                customer_code: m?.customer_code || '',
-                customer_name: m?.name || m?.Name || '',
-                contact_no: m?.phone || m?.MobileNo || '',
-                email: m?.email || m?.Email || '',
-            });
+            if (window.useOrderStore) {
+                window.useOrderStore.setState({
+                    orderId: null,
+                    sales_dtls: [],
+                    net_amt: 0,
+                    sub_total: 0,
+                    total_tax: 0,
+                    lastSNo: 0,
+                    service_type: type,
+                    absorb_tax: menuTaxFlag, // ✅ from V2
+                });
+            }
         }
 
-        // activeOrder is fully built here — both paths above are synchronous
-        window.useOrderStore?.getState().setOrder(activeOrder);
-        if (!isSameType) window.useOrderStore?.getState().setLastSNo(0);
+        if (window.useOrderStore) {
+            window.useOrderStore.getState().setOrder(activeOrder);
+            if (!isSameType) window.useOrderStore.getState().setLastSNo(0);
+        }
+
         window._orderTypeSelected = true;
 
-        // ── 6. Fire-and-forget server sync ───────────────────────────────────
+        // ✅ Loading UI (from V1)
+        if (selectedOption) {
+            const displayLabel = type === 'T' ? 'Takeaway' : (type === 'Q' ? 'QR Order' : 'Dine-in');
+            selectedOption.innerHTML = `
+                <div class="landing-option-icon">⏳</div>
+                <h2 class="landing-option-title">Loading Menu...</h2>
+                <p class="landing-option-desc">Setting up ${displayLabel}</p>
+            `;
+            selectedOption.classList.add('landing-loading');
+        }
+
+        await loadAndRenderMenu('all', language);
+
+        // ✅ sanitizedSalesDtls + syncOrderCacheToServer (from V1)
         const sanitizedSalesDtls = (activeOrder.sales_dtls || []).map(dtl => ({
             ...dtl,
             is_absorbtax: typeof dtl.is_absorbtax === 'string'
                 ? (dtl.is_absorbtax === 'Y' ? 1 : parseInt(dtl.is_absorbtax) || 0)
-                : (dtl.is_absorbtax ? 1 : 0),
+                : (dtl.is_absorbtax ? 1 : 0)
         }));
 
-        Promise.all([
-            typeof updateOrderCacheOnServer === 'function'
-                ? updateOrderCacheOnServer(activeOrder)
-                    .catch(e => console.warn('⚠️ updateOrderCacheOnServer failed:', e))
-                : Promise.resolve(),
-            typeof syncOrderCacheToServer === 'function'
-                ? syncOrderCacheToServer({
-                    orderType: type,
-                    status: 'N',
-                    orderData: {
-                        ...activeOrder,
-                        sales_dtls: sanitizedSalesDtls,
-                        doc_date: activeOrder.doc_date
-                            || new Date().toISOString().replace('T', ' ').substring(0, 19),
-                        absorb_tax: menuTaxFlag,
-                        absorb_tax_info: menuTaxFlag === 'Y' ? 'Absorb Tax' : 'Not Absorb Tax',
-                        service_type: type,
-                        sub_total: String(activeOrder.sub_total || '0.00'),
-                        total_tax: String(activeOrder.total_tax || '0.00'),
-                        net_amt: String(activeOrder.net_amt || '0.00'),
-                    },
-                }).catch(e => console.warn('⚠️ syncOrderCacheToServer failed:', e))
-                : Promise.resolve(),
-        ]);
+        const syncPayload = {
+            orderType: type,
+            orderData: {
+                ...activeOrder,
+                sales_dtls: sanitizedSalesDtls,
+                doc_date: activeOrder.doc_date || new Date().toISOString().replace('T', ' ').substring(0, 19),
+                absorb_tax: menuTaxFlag,
+                absorb_tax_info: menuTaxFlag === "Y" ? "Absorb Tax" : "Not Absorb Tax",
+                service_type: type,
+                service_type_info: serviceTypeInfo,
+                sub_total: String(activeOrder.sub_total || "0.00"),
+                total_tax: String(activeOrder.total_tax || "0.00"),
+                net_amt: String(activeOrder.net_amt || "0.00")
+            },
+            status: "N"
+        };
 
-        if (typeof updateCartCount === 'function') updateCartCount();
+        if (typeof updateOrderCacheOnServer === 'function') await updateOrderCacheOnServer(activeOrder);
 
-        // ── 7. Menu load ─────────────────────────────────────────────────────
-        await loadAndRenderMenu('all', language);
-        await waitForMenuPaint();
-        patchCategoryImages();
-        hideMenuLoadingShield();
+        try {
+            if (typeof syncOrderCacheToServer === 'function') await syncOrderCacheToServer(syncPayload);
+        } catch (syncError) {
+            console.warn("⚠️ Secondary sync failed (non-critical):", syncError);
+        }
+
+        //if (typeof updateCartCount === 'function') updateCartCount();
+        debouncedUpdateCartCount();
 
     } catch (error) {
-        console.error('❌ Critical error in selectOrderType:', error);
-        console.error('❌ Stack:', error?.stack);
-        hideMenuLoadingShield();
-        //location.reload(true);
-
-        //// Restore landing so user can retry — don't hard reload
-        //const landingOverlay = document.getElementById('landingOverlay');
-        //if (landingOverlay) {
-        //    landingOverlay.style.opacity = '1';
-        //    landingOverlay.classList.remove('hidden');
-        //}
+        console.error("❌ Critical error in selectOrderType:", error);
+        location.reload(true);
     } finally {
-        window._pendingOrderType = null; // ← clean up after function completes
         setTimeout(() => { window.isSelectingOrderType = false; }, 600);
     }
 }
-
-/**
- * Resolves only after the menu UI is fully painted:
- *  - Two requestAnimationFrame ticks (lets the browser layout + paint)
- *  - All category sidebar icons loaded
- *  - All menu item images that have started loading have finished
- *  - Web fonts settled
- */
-function waitForMenuPaint() {
-    return new Promise(resolve => {
-        requestAnimationFrame(() => {
-            requestAnimationFrame(async () => {
-                try {
-                    const MAX_WAIT_MS = 3000;
-                    const start = performance.now();
-
-                    // ── Step 1: Wait for category tabs to stabilize ───────────
-                    let prevCatCount = -1;
-                    let stableFrames = 0;
-                    const STABLE_NEEDED = 3;
-
-                    while (
-                        stableFrames < STABLE_NEEDED &&
-                        performance.now() - start < MAX_WAIT_MS
-                    ) {
-                        const catCount = document.querySelectorAll('.category-tab').length;
-                        if (catCount > 0 && catCount === prevCatCount) {
-                            stableFrames++;
-                        } else {
-                            stableFrames = 0;
-                            prevCatCount = catCount;
-                        }
-                        await new Promise(r => requestAnimationFrame(r));
-                    }
-
-                    console.log(`✅ Categories stable: ${prevCatCount} — took ${Math.round(performance.now() - start)}ms`);
-                    const afterStep1 = performance.now();
-
-                    // ── Step 2: Wait for at least 1 menu item ─────────────────
-                    let itemWaitMs = 0;
-                    while (
-                        document.querySelectorAll('.menu-item').length === 0 &&
-                        itemWaitMs < 2000
-                    ) {
-                        await new Promise(r => setTimeout(r, 50));
-                        itemWaitMs += 50;
-                    }
-
-                    console.log(`✅ Menu items present — step2 took ${Math.round(performance.now() - afterStep1)}ms`);
-                    const afterStep2 = performance.now();
-
-                    // ── Step 3: Only wait for ITEM images in viewport ─────────
-                    await new Promise(r => setTimeout(r, 100));
-
-                    const menuRoot = document.querySelector(
-                        '#menuContainer, .menu-container, [data-menu-root], #menuGrid'
-                    );
-
-                    const viewportImgs = menuRoot
-                        ? Array.from(menuRoot.querySelectorAll('img'))
-                            .filter(img => {
-                                if (img.complete) return false;
-                                const rect = img.getBoundingClientRect();
-                                return rect.top < window.innerHeight && rect.bottom > 0;
-                            })
-                        : [];
-
-                    console.log(`🖼️ waitForMenuPaint: ${viewportImgs.length} viewport item images loading`);
-
-                    const imgPromises = viewportImgs.map(img => {
-                        const decodePromise = img.decode
-                            ? img.decode().catch(() => { })
-                            : new Promise(res => {
-                                const done = () => res();
-                                img.addEventListener('load', done, { once: true });
-                                img.addEventListener('error', done, { once: true });
-                            });
-                        return Promise.race([
-                            decodePromise,
-                            new Promise(res => setTimeout(res, 1000))
-                        ]);
-                    });
-
-                    const remaining = MAX_WAIT_MS - (performance.now() - start);
-                    await Promise.race([
-                        Promise.all(imgPromises),
-                        new Promise(res => setTimeout(res, Math.max(remaining, 300)))
-                    ]);
-
-                    console.log(`✅ waitForMenuPaint done — step3 took ${Math.round(performance.now() - afterStep2)}ms — total ${Math.round(performance.now() - start)}ms`);
-
-                } catch (e) {
-                    console.warn('⚠️ waitForMenuPaint error (non-fatal):', e);
-                }
-                resolve();
-            });
-        });
-    });
-}
-export function showMenuLoadingShield() {
-    const shield = document.getElementById('menuLoadingShield');
-    if (!shield) { console.error('menuLoadingShield not found'); return; }
-    shield.style.display = 'flex';
-    shield.style.opacity = '1';
-}
-
-
-export function hideMenuLoadingShield() {
-    const shield = document.getElementById('menuLoadingShield');
-    if (!shield) return;
-    shield.style.transition = 'opacity 0.4s ease';
-    shield.style.opacity = '0';
-    setTimeout(() => { shield.style.display = 'none'; }, 400);
-}
-
-window.showMenuLoadingShield = showMenuLoadingShield;
-window.hideMenuLoadingShield = hideMenuLoadingShield;
 
 // ─── FIX 5: Pre-warm menu when landing page shows ────────────────────────────
 // Call this whenever the landing overlay becomes visible (after order complete,
@@ -1464,24 +1224,16 @@ window.hideMenuLoadingShield = hideMenuLoadingShield;
 export function prewarmMenuOnLanding() {
     console.log('🔥 Pre-warming menu on landing show...');
 
+    // Load menu data silently in background
     if (!apiManager.isLoaded('menuItems')) {
-        loadMenuItems().catch(err => console.warn('⚠️ Menu pre-warm failed:', err.message));
+        loadMenuItems().catch(err => console.warn('⚠️ Menu pre-warm failed (non-fatal):', err.message));
     }
 
-    // ✅ Pre-warm FullItems and expose the promise
-    if (!apiManager.isLoaded('items')) {
-        window._fullItemsPromise = loadItems().catch(err => {
-            console.warn('⚠️ FullItems pre-warm failed:', err.message);
-            return [];
-        });
-    } else {
-        // Already loaded — expose as resolved promise for _doLoadAndRenderMenu
-        window._fullItemsPromise = Promise.resolve(getFullItems());
-    }
-
+    // Also refresh stocks silently — they may have changed after the order
     apiManager.clearCache('stocks');
     loadStocks().catch(() => { });
 
+    // Rebuild avl map in case it was lost
     if (!window._itemAvlMapBuilt) buildItemAvlMapFromLocalStorage();
 }
 
@@ -1563,17 +1315,6 @@ export async function loadAndRenderMenu(category = 'all', language = '') {
     return _menuLoadPromise;
 }
 
-const toProxyUrl = (raw) => {
-    if (!raw?.trim()) return null;
-    // Already a proxy/absolute URL — never double-encode
-    if (raw.startsWith('http') || raw.startsWith('data:') || raw.toLowerCase().startsWith('/api/')) {
-        return raw;
-    }
-    return raw.startsWith('public/upload/')
-        ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(raw)}`
-        : raw;
-};
-
 async function _doLoadAndRenderMenu(category, language) {
     try {
         const isWarmBoot = !!window.__isWarmBoot;
@@ -1605,117 +1346,84 @@ async function _doLoadAndRenderMenu(category, language) {
         const allItems = menuData.flatMap(section => section.items || []);
 
         // ── Set menu items in cache FIRST so buildVisibleCategories works ─────
+        // Previously cache.setMenuItems was called after preloads, so
+        // buildVisibleCategories returned empty and only 1 URL was preloaded.
         const cache = useCache();
         cache.setMenuItems(menuData);
 
-        // ── Shared helpers ────────────────────────────────────────────────────
-
-
-        const existingPreloads = new Set(
-            Array.from(document.querySelectorAll('link[rel="preload"][as="image"]'))
-                .map(l => l.href)
-        );
-
-        const addPreload = (url, priority) => {
-            if (!url || existingPreloads.has(url)) return;
-            const link = document.createElement('link');
-            link.rel = 'preload';
-            link.as = 'image';
-            link.href = url;
-            link.fetchPriority = priority;
-            document.head.appendChild(link);
-            existingPreloads.add(url);
-        };
-
-
-        window._categoryImageMap = new Map();
+        // ── FIRE IMAGE PRELOADS NOW — before FullItems polling blocks us ──────
         try {
+            const existingPreloads = new Set(
+                Array.from(document.querySelectorAll('link[rel="preload"][as="image"]'))
+                    .map(l => l.href)
+            );
+
+            const toProxyUrl = (raw) => {
+                if (!raw?.trim()) return null;
+                return raw.startsWith('public/upload/')
+                    ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(raw)}`
+                    : raw;
+            };
+
+            const addPreload = (url, priority) => {
+                if (!url || existingPreloads.has(url)) return;
+                const link = document.createElement('link');
+                link.rel = 'preload';
+                link.as = 'image';
+                link.href = url;
+                link.fetchPriority = priority;
+                document.head.appendChild(link);
+                existingPreloads.add(url);
+            };
+
+            // 1. Category sidebar images — cache is now populated so this works
             const tempCategories = (menuData[0]?.category || [])
-                .filter(cat => cat.hide_from_tqr !== '1');
+                .filter(cat => cat.hide_from_tqr !== '1' && cat.tqr_cat_image_url?.trim());
 
-            tempCategories.forEach(cat => {
-                // ✅ Try every possible field name
-                const rawUrl =
-                    cat.tqr_cat_image_url ||
-                    cat.tqr_image_url ||
-                    cat.cat_image_url ||
-                    cat.image_url ||
-                    cat.category_image ||
-                    cat.icon_url ||
-                    cat.img ||
-                    // Check all string fields for image-like values
-                    Object.values(cat).find(v =>
-                        typeof v === 'string' && (
-                            v.includes('public/upload/') ||
-                            v.includes('.png') ||
-                            v.includes('.jpg') ||
-                            v.includes('.jpeg') ||
-                            v.includes('.webp')
-                        )
-                    );
-
-                const url = toProxyUrl(rawUrl);
-                if (!url) return;
-
-                addPreload(url, 'high');
-
-                // ✅ Store for populateCategoryTabsWorkFlow to use
-                const code = cat.category_code;
-                if (code) {
-                    window._categoryImageMap.set(code, url);
-                    window._categoryImageMap.set(code.trim().toLowerCase(), url);
-                }
+            tempCategories.slice(0, 8).forEach((cat, idx) => {
+                const url = toProxyUrl(cat.tqr_cat_image_url);
+                if (url) addPreload(url, idx < 3 ? 'high' : 'auto');
             });
 
-            console.log(`🖼️ Category preloads fired: ${existingPreloads.size} URLs`);
-            console.log(`🗂️ _categoryImageMap built: ${window._categoryImageMap.size} entries`);
+            // 2. First 9 menu item images
+            const firstNineUrls = [];
+            allItems.slice(0, 9).forEach((item, idx) => {
+                const url = toProxyUrl(item.tqr_image_url || item.item_image || item.image);
+                if (!url) return;
+                firstNineUrls.push(url);
+                addPreload(url, idx < 3 ? 'high' : 'auto');
+            });
+
+            // 3. Register with imagePreloadMap for isImagePreloaded() checks
+            preloadImages(firstNineUrls, 'high');
+
+            console.log(`🖼️ Early preloads fired: ${existingPreloads.size} URLs (before FullItems wait)`);
         } catch (e) {
-            console.warn('⚠️ Category preload failed (non-fatal):', e);
+            console.warn('⚠️ Early preload failed (non-fatal):', e);
         }
 
-        // ── NOW wait for FullItems — category images already fetching ─────────
-        const getFullItems = () =>
-            useCache()?.items
+        // ── NOW wait for FullItems — images already fetching ─────────────────
+        let fullItems = useCache()?.items
             || window.apiManager?.loadedData?.get('FullItems')
             || window.apiManager?.loadedData?.get('items')
             || [];
 
-        let fullItems = getFullItems();
-
         if (!fullItems.length) {
-            if (window._fullItemsPromise) {
-                // ✅ Join the already-in-flight or already-resolved promise from initializeApp
-                // If already resolved (cold boot completed): instant, no network cost
-                // If still in-flight (user tapped very fast): waits for it naturally
-                console.log('⏳ Joining existing _fullItemsPromise...');
-                const waitStart = Date.now();
-                const result = await Promise.race([
-                    window._fullItemsPromise,
-                    new Promise(res => setTimeout(() => res([]), 15000))
-                ]);
-                fullItems = result?.length ? result : getFullItems();
-                console.log(`✅ FullItems via promise: ${fullItems.length} items in ${Date.now() - waitStart}ms`);
-            } else {
-                // ✅ Fallback: start fresh poll (shouldn't happen after initializeApp fix)
-                console.warn('⚠️ _fullItemsPromise not set — falling back to poll');
-                const waitStart = Date.now();
-                fullItems = await new Promise(resolve => {
-                    const poll = setInterval(() => {
-                        const items = getFullItems();
-                        if (items.length) {
-                            clearInterval(poll);
-                            console.log(`✅ FullItems polled after ${Date.now() - waitStart}ms`);
-                            resolve(items);
-                            return;
-                        }
-                        if (Date.now() - waitStart >= 15000) {
-                            clearInterval(poll);
-                            console.warn('⚠️ FullItems poll timeout');
-                            resolve([]);
-                        }
-                    }, 150);
-                });
-            }
+            console.log('⏳ FullItems not ready, waiting up to 3s...');
+            fullItems = await new Promise(resolve => {
+                let attempts = 0;
+                const poll = setInterval(() => {
+                    const items = useCache()?.items
+                        || window.apiManager?.loadedData?.get('FullItems')
+                        || window.apiManager?.loadedData?.get('items')
+                        || [];
+                    attempts++;
+                    if (items.length || attempts >= 6) {
+                        clearInterval(poll);
+                        resolve(items);
+                    }
+                }, 500);
+            });
         }
 
         // ── Enrich with FullItems data ────────────────────────────────────────
@@ -1748,29 +1456,6 @@ async function _doLoadAndRenderMenu(category, language) {
         });
 
         window.menuGridItems = enrichedItems;
-        requestIdleCallback?.(() => {
-            enrichedItems.forEach(item => {
-                const url = toProxyUrl(item.tqr_image_url || item.item_image || item.image);
-                if (url) poolImage(url);
-            });
-            console.log(`🖼️ Image pool warmed: ${_decodedImagePool.size} images`);
-        }, { timeout: 5000 });
-        // ── POST-ENRICHMENT: Preload first 18 item images ─────────────────────
-        // tqr_image_url comes from FullItems — must run after enrichment.
-        // 18 = 2 full rows of 3 columns × 3 visible rows on kiosk viewport.
-        try {
-            const itemPreloadUrls = [];
-            for (const item of enrichedItems) {
-                if (itemPreloadUrls.length >= 18) break;
-                const url = toProxyUrl(item.tqr_image_url || item.item_image || item.image);
-                if (!url) continue;
-                itemPreloadUrls.push(url);
-                addPreload(url, itemPreloadUrls.length <= 3 ? 'high' : 'auto');
-            }
-            preloadImages(itemPreloadUrls, 'high');
-            console.log(`🖼️ Item preloads fired: ${itemPreloadUrls.length} URLs (post-enrichment)`);
-            console.log(`🖼️ Total preloads: ${existingPreloads.size} URLs`);
-        } catch (e) { /* non-fatal */ }
 
         // ── Price cache ───────────────────────────────────────────────────────
         const cacheFingerprint = enrichedItems.length;
@@ -1790,76 +1475,20 @@ async function _doLoadAndRenderMenu(category, language) {
             console.log('💰 Price cache pre-built from all items:', lowestPriceCache.size);
         }
 
-        // ── Render tabs ───────────────────────────────────────────────────────
-        const categories = buildVisibleCategories?.() || [];
+        // ── Render tabs — reuse tempCategories, avoid second buildVisibleCategories call
+        const categories = (typeof tempCategories !== 'undefined' && tempCategories.length > 0)
+            ? tempCategories
+            : (buildVisibleCategories?.() || []);
+
         if (categories.length === 0) throw new Error('No categories found');
 
-        // ── PRELOAD: now we know exactly which categories will render ─────────
-        try {
-            categories.forEach((cat) => {
-                const url = toProxyUrl(cat.tqr_cat_image_url || cat.tqr_image_url);
-                if (url) addPreload(url, 'high');
-            });
-        } catch (e) { /* non-fatal */ }
-
         populateCategoryTabs?.(categories);
-        await waitForMenuGridReady();
-
         console.log('✅ loadAndRenderMenu completed successfully');
 
     } catch (error) {
         console.error('❌ Error in loadAndRenderMenu:', error);
         throw error;
     }
-}
-
-function waitForMenuGridReady(timeout = 6000) {
-    return new Promise((resolve) => {
-        const start = Date.now();
-
-        // First, log what's actually in the DOM so we can find the right selector
-        const debugSelectors = [
-            '.menu-item-card',
-            '.menu-grid-item',
-            '[data-item-no]',
-            '.menu-item',
-            '.item-card',
-            '.grid-item',
-            '.product-card',
-        ];
-
-        const check = () => {
-            // Debug: log first passing selector
-            for (const sel of debugSelectors) {
-                const found = document.querySelectorAll(sel);
-                if (found.length > 0) {
-                    console.log(`✅ waitForMenuGridReady: found ${found.length} via "${sel}"`);
-                    return resolve();
-                }
-            }
-
-            if (Date.now() - start >= timeout) {
-                console.warn('⚠️ waitForMenuGridReady timed out — check selector');
-                // Log everything in the menu container to find the right class
-                const menuContainer = document.querySelector(
-                    '#menuGrid, #menu-grid, .menu-grid, #menuContainer, #itemGrid, #menuContent'
-                );
-                if (menuContainer) {
-                    const children = menuContainer.children;
-                    if (children.length > 0) {
-                        console.log('🔍 Menu container children classes:',
-                            Array.from(children).slice(0, 3).map(el => el.className)
-                        );
-                    }
-                }
-                return resolve();
-            }
-
-            requestAnimationFrame(check);
-        };
-
-        requestAnimationFrame(check);
-    });
 }
 
 async function renderCategoryItems(categoryName, menuData) {
@@ -2061,10 +1690,7 @@ async function createMenuItemElement(item) {
     const restaurantLogo = RESTAURANT_CONFIG.logo || '';
     const hasMenuTypeGrpDtls = Array.isArray(item.itemmaster_menutype_grpdtls) ? item.itemmaster_menutype_grpdtls.length > 0 : Boolean(item.itemmaster_menutype_grpdtls);
     const priceObj = item?.selling_uom_dtls?.[0]?.price_dtls?.[0] || item;
-    //const priceValue = hasMenuTypeGrpDtls ? null : parseFloat(getPriceByServiceType(priceObj));
-    //const displayPrice = !isNaN(priceValue) && priceValue > 0 ? `$${priceValue.toFixed(2)}` : '';
-    // ✅ Always use selling_uom_dtls price — for combos this is the bundle price ($19.90)
-    const priceValue = parseFloat(getPriceByServiceType(priceObj));
+    const priceValue = hasMenuTypeGrpDtls ? null : parseFloat(getPriceByServiceType(priceObj));
     const displayPrice = !isNaN(priceValue) && priceValue > 0 ? `$${priceValue.toFixed(2)}` : '';
     const allergenUrl = resolveAllergenImageUrl(item, menuItem);
     const nutritionUrl = resolveNutritionImageUrl(item, menuItem);
@@ -2263,69 +1889,28 @@ function getCachedItems() {
     catch (e) { return []; }
 }
 
-function isWithinMenuTimeWindow(item) {
-    // If no time windows are defined, default to showing the item
-    if (!item.start_time || !item.end_time) return true;
-
-    try {
-        const now = new Date();
-        const currentHms = [
-            String(now.getHours()).padStart(2, '0'),
-            String(now.getMinutes()).padStart(2, '0'),
-            String(now.getSeconds()).padStart(2, '0')
-        ].join(':'); // Yields exact current time string like "17:02:45"
-
-        // Lexicographical string comparison works flawlessly on zero-padded "HH:mm:ss" strings
-        if (currentHms < item.start_time || currentHms > item.end_time) {
-            console.warn(`⏰ [Time-Gate] Hiding ${item.item_name || item.sku_no}: Kiosk time (${currentHms}) is outside menu window (${item.start_time} - ${item.end_time})`);
-            return false;
-        }
-
-        return true;
-    } catch (err) {
-        console.error('⚠️ Error validating item time signature:', err);
-        return true; // Fallback to safe true so a clock glitch doesn't wipe the menu
-    }
-}
-
 // ─── FIX 7: shouldShowItem — single map build, never per-item ────────────────
 // window._itemAvlMapBuilt prevents repeated rebuild calls across 335+ items.
 // The map is built once at startup and once on warm boot (see initializeApp).
 function shouldShowItem(item) {
-    if (!item) return false;
-    if (!isWithinMenuTimeWindow(item)) return false;
+    if (!item || !item.item_no) return false;
 
-    const itemNo = item.item_no?.trim();
-    const skuNo = item.sku_no?.trim();
     const currentOrderType = localStorage.getItem('orderType');
+
     if (item.hide_from_tqr === 'Y' || item.hide_from_tqr === '1') return false;
+    if (item.is_emenu_disable === 'Y' || item.is_emenu_disable === '1') return false;
+    if (currentOrderType === 'E' && (item.hide_from_dine_in === 'Y' || item.hide_from_dine_in === '1')) return false;
+    if (currentOrderType === 'T' && (item.hide_from_take_away === 'Y' || item.hide_from_take_away === '1')) return false;
 
-    if (!window._itemAvlMapBuilt) buildItemAvlMapFromLocalStorage();
-
-    let avlRecord = null;
-    if (itemNo && window.itemAvlMap?.[itemNo]) {
-        avlRecord = window.itemAvlMap[itemNo];
-    } else if (skuNo && window.itemAvlMap?.[skuNo]) {
-        avlRecord = window.itemAvlMap[skuNo];
+    // Build map once if not yet built — never rebuild per item
+    if (!window._itemAvlMapBuilt) {
+        buildItemAvlMapFromLocalStorage();
+        // _itemAvlMapBuilt is set inside buildItemAvlMapFromLocalStorage
     }
 
-    // is_emenu_disable applies universally across all order types, so it's
-    // checked as an OR across both sources — either one flagging disabled
-    // is enough to hide the item. No fallback/override priority between
-    // avlRecord and the item's own field; both must agree it's enabled.
-    const isDisabled =
-        item.is_emenu_disable === 'Y' || item.is_emenu_disable === '1' ||
-        avlRecord?.is_emenu_disable === 'Y';
-    if (isDisabled) return false;
-
-    // Same OR treatment for is_soldout, for the same reason.
-    const isSoldOut =
-        item.is_soldout === 'Y' || item.is_soldout === '1' ||
-        avlRecord?.is_soldout === 'Y';
-    if (isSoldOut) return false;
-
-    if (currentOrderType === 'E' && (item.hide_item_dinein === 'Y' || item.hide_item_dinein === '1')) return false;
-    if (currentOrderType === 'T' && (item.hide_item_takeaway === 'Y' || item.hide_item_takeaway === '1')) return false;
+    const avlRecord = window.itemAvlMap?.[item.item_no?.trim()];
+    if (avlRecord?.is_emenu_disable === 'Y') return false;
+    if (avlRecord?.is_soldout === 'Y') return false;
 
     return true;
 }
@@ -2378,21 +1963,25 @@ function createCategoryButton(category, isActive, isSubcategory, selectedLanguag
     container.className = isSubcategory ? 'subcategory-tab-container' : 'category-tab-container';
 
     const rawCatImage = category.tqr_cat_image_url || category.tqr_image_url
-        || categoryImageMap?.get(category.category_code)
-        || categoryImageMap?.get(category.category_code?.trim().toLowerCase());
+        || categoryImageMap.get(category.category_code)
+        || categoryImageMap.get(category.category_code?.trim().toLowerCase());
 
     const img = document.createElement('img');
     img.alt = category.category_name || category.category_code;
     img.className = isSubcategory ? 'subcategory-icon' : 'category-icon';
+
     // ── Always eager — sidebar is always on screen, lazy defers these needlessly
     img.loading = 'eager';
     img.decoding = 'async';
     // First 3 categories get high priority, rest auto
-    img.fetchPriority = 'high';
+    img.fetchPriority = categoryIndex < 3 ? 'high' : 'auto';
 
     if (rawCatImage?.trim()) {
-        img.src = toProxyUrl(rawCatImage) || RESTAURANT_CONFIG.logo;
-
+        img.src = (!rawCatImage.startsWith('http') &&
+            !rawCatImage.startsWith('data:') &&
+            !rawCatImage.startsWith('/API/'))
+            ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(rawCatImage)}`
+            : rawCatImage;
         img.onerror = function () {
             if (RESTAURANT_CONFIG.logo && this.src !== RESTAURANT_CONFIG.logo) {
                 this.src = RESTAURANT_CONFIG.logo;
@@ -2412,11 +2001,12 @@ function createCategoryButton(category, isActive, isSubcategory, selectedLanguag
     nameSpan.textContent = (selectedLanguage && typeof getTranslatedName === 'function')
         ? getTranslatedName(category.category_code, category.category_name, selectedLanguage, 'category')
         : (category.category_name || category.category_code || '');
-
     container.appendChild(nameSpan);
+
     btn.appendChild(container);
     return btn;
 }
+
 
 function resolveCategoryImageFromItem(categoryCode) {
     try {
@@ -2647,18 +2237,30 @@ function populateCategoryTabsWorkFlow(categories = [], selectedLanguage = "") {
     tabContainer.innerHTML = '';
     tabsWrapper.classList.add('sticky');
 
-    // ✅ Single declaration — uses window._categoryImageMap built in _doLoadAndRenderMenu
-    const categoryImageMap = window._categoryImageMap || new Map();
+    // ── Preload category images FIRST before any DOM work ────────────────────
+    // tqr_cat_image_url lives on category objects passed in, not on sections.
+    // Confirmed from debug: all 5 visible categories have this field populated.
     try {
-        categories.forEach(cat => {
-            const code = cat.category_code;
-            if (!code || categoryImageMap.has(code)) return;
-            const url = toProxyUrl(cat.tqr_cat_image_url || cat.tqr_image_url);
-            if (!url) return;
-            categoryImageMap.set(code, url);
-            categoryImageMap.set(code.trim().toLowerCase(), url);
+        const existingPreloads = new Set(
+            Array.from(document.querySelectorAll('link[rel="preload"][as="image"]'))
+                .map(l => l.href)
+        );
+        categories.slice(0, 8).forEach((cat, idx) => {
+            const raw = cat.tqr_cat_image_url || cat.tqr_image_url;
+            if (!raw?.trim()) return;
+            const url = raw.startsWith('public/upload/')
+                ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(raw)}`
+                : raw;
+            if (existingPreloads.has(url)) return;
+            const link = document.createElement('link');
+            link.rel = 'preload';
+            link.as = 'image';
+            link.href = url;
+            link.fetchPriority = idx < 3 ? 'high' : 'auto';
+            document.head.appendChild(link);
+            existingPreloads.add(url);
         });
-        console.log('🗂️ Category image map final:', categoryImageMap.size, 'entries');
+        console.log('🗂️ Category image preloads fired:', existingPreloads.size);
     } catch (e) { /* non-fatal */ }
 
     const allItems = useCache()?.items || [];
@@ -2730,6 +2332,41 @@ function populateCategoryTabsWorkFlow(categories = [], selectedLanguage = "") {
 
     tabContainer.classList.add('sticky');
 
+    // ── Build category image map — tqr_cat_image_url confirmed on categories ─
+    // Source 1: categories array passed in (has tqr_cat_image_url directly)
+    // Source 2: enriched menu items as fallback for categories with no image
+    const categoryImageMap = new Map();
+    try {
+        // Source 1: direct from categories array — this is the correct source
+        categories.forEach(cat => {
+            const code = cat.category_code;
+            if (!code) return;
+            const raw = cat.tqr_cat_image_url || cat.tqr_image_url;
+            if (!raw?.trim()) return;
+            const url = raw.startsWith('public/upload/')
+                ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(raw)}`
+                : raw;
+            categoryImageMap.set(code, url);
+            categoryImageMap.set(code.trim().toLowerCase(), url);
+        });
+
+        // Source 2: first item image per category as fallback
+        const allMenuItems = window.menuGridItems || useCache()?.items || [];
+        allMenuItems.forEach(item => {
+            const code = item.category_code || item.root_category_code;
+            if (!code || categoryImageMap.has(code)) return;
+            const raw = item.tqr_image_url || item.item_image || item.image;
+            if (!raw?.trim()) return;
+            const url = (!raw.startsWith('http') && !raw.startsWith('data:') && !raw.startsWith('/API/'))
+                ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(raw)}`
+                : raw;
+            categoryImageMap.set(code, url);
+            categoryImageMap.set(code.trim().toLowerCase(), url);
+        });
+
+        console.log('🗂️ Category image map built:', categoryImageMap.size, 'entries');
+    } catch (e) { /* non-fatal */ }
+
     const categoryMeta = new Map();
     mainCategories.forEach(cat => {
         categoryMeta.set(cat.category_code, {
@@ -2744,7 +2381,7 @@ function populateCategoryTabsWorkFlow(categories = [], selectedLanguage = "") {
         const { visibleSubcats, mainCategoryHasItems } = categoryMeta.get(cat.category_code);
 
         const mainBtn = createCategoryButton(cat, isFirst, false, selectedLanguage, categoryImageMap, idx);
-        mainBtn.classList.add('hover:bg-gray-200');
+        mainBtn.classList.add('px-4', 'py-2', 'rounded', 'hover:bg-gray-200', 'flex', 'justify-between', 'items-center', 'w-full');
         if (isSticky) { mainBtn.classList.add("mobile-sticky"); mainBtn.style.cssText += ';position:sticky;top:0;z-index:100;color:white;font-weight:600;background-color:var(--primary);'; }
         if (isFirst) mainBtn.classList.add('active', 'bg-gray-300');
 
@@ -2833,6 +2470,7 @@ function populateCategoryTabsWorkFlow(categories = [], selectedLanguage = "") {
         }
     }
 }
+
 function updateMobileSubcategoryBar(subcategories, selectedLanguage, mainCategory = null) {
     const mobileSubBar = document.querySelector('.mobile-subcategory-bar');
     if (!mobileSubBar) return;
@@ -2919,7 +2557,27 @@ function ensureItemModal() {
         </div>
     `;
     document.body.appendChild(modal);
-
+    const style = document.createElement('style');
+    style.textContent = `
+        #itemDescModal{position:fixed;inset:0;background:rgba(0,0,0,.50);backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;opacity:0;pointer-events:none;transition:opacity .22s ease;}
+        #itemDescModal.idm-open{opacity:1;pointer-events:all;}
+        .idm-card{background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.22);width:100%;max-width:420px;overflow:hidden;transform:translateY(20px) scale(.97);transition:transform .25s cubic-bezier(.34,1.56,.64,1);}
+        #itemDescModal.idm-open .idm-card{transform:translateY(0) scale(1);}
+        .idm-image-wrap{position:relative;}
+        #idmImg{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;height:350px;}
+        .idm-body{padding:20px 24px 24px;}
+        .idm-category{font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#c8423f;margin-bottom:6px;}
+        .idm-title{font-size:1.05rem;font-weight:700;line-height:1.35;margin-bottom:8px;color:#1a1a1a;}
+        .idm-desc{font-size:.87rem;color:#6b6560;line-height:1.6;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid #e8e4de;}
+        .idm-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+        .idm-price{font-size:1.4rem;font-weight:800;color:#c8423f;}
+        .idm-actions{display:flex;gap:10px;}
+        .idm-close-btn{background:#f3f0eb;color:#6b6560;border:none;border-radius:8px;padding:9px 16px;font-size:.83rem;font-weight:600;cursor:pointer;}
+        .idm-close-btn:hover{background:#e8e4de;}
+        .idm-add-btn{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:.83rem;font-weight:700;cursor:pointer;}
+        .idm-add-btn:hover{background:#1d4ed8;}
+    `;
+    document.head.appendChild(style);
     const closeModal = () => { modal.classList.remove('idm-open'); document.body.style.overflow = ''; modal._currentItemId = null; };
     document.getElementById('idmCloseBtn').addEventListener('click', closeModal);
     modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
@@ -2941,7 +2599,7 @@ function openItemModal(item, imageUrl, displayPrice, category = '') {
     document.getElementById('idmImg').src = imageUrl || '';
     document.getElementById('idmImg').alt = item.display_name || item.item_name;
     document.getElementById('idmCategory').textContent = category;
-    document.getElementById('itemDescModalTitle').textContent = item.item_desc || item.display_name || item.item_name;
+    document.getElementById('itemDescModalTitle').textContent = item.display_name || item.item_name;
     document.getElementById('idmDesc').textContent = '';
     document.getElementById('idmPrice').textContent = displayPrice || '';
     modal.classList.add('idm-open');
@@ -2951,36 +2609,24 @@ function openItemModal(item, imageUrl, displayPrice, category = '') {
 export function sortMenuItems(items) {
     if (!Array.isArray(items) || items.length === 0) return items;
 
-    const menuSections = useCache()?.menuItems || [];
-    const seqMap = new Map();
-    menuSections.forEach(section => {
-        (section.category || []).forEach(cat => {
-            const code = (cat.category_code || '').toUpperCase();
-            if (code) seqMap.set(code, parseInt(cat.course_seq) || 999);
-        });
-    });
-
     return [...items].sort((a, b) => {
-        const catA = (a?.category_code || '').toUpperCase();
-        const catB = (b?.category_code || '').toUpperCase();
+        const seqA = parseInt(a?.course_seq) || 0;
+        const seqB = parseInt(b?.course_seq) || 0;
 
-        // 1️⃣ Sort by category course_seq
-        const seqA = seqMap.get(catA) ?? parseInt(a?.course_seq) ?? 999;
-        const seqB = seqMap.get(catB) ?? parseInt(b?.course_seq) ?? 999;
-        if (seqA !== seqB) return seqA - seqB;
+        // ✅ If seq values differ, sort by seq ascending
+        if (seqA !== seqB) {
+            // Push 0 to end
+            if (seqA === 0) return 1;
+            if (seqB === 0) return -1;
+            return seqA - seqB;
+        }
 
-        // 2️⃣ Same category — sort by tqr_seq_type (item-level order)
-        const tqrA = parseInt(a?.tqr_seq_type) || 999;
-        const tqrB = parseInt(b?.tqr_seq_type) || 999;
-        if (tqrA !== tqrB) return tqrA - tqrB;
-
-        // 3️⃣ Same tqr_seq_type — fallback alphabetical by shot_name
-        const nameA = (a?.shot_name || a?.item_name || '').toUpperCase();
-        const nameB = (b?.shot_name || b?.item_name || '').toUpperCase();
+        // ✅ Same seq (e.g. all 1) — fall back to item_name alphabetically
+        const nameA = (a?.item_name || a?.display_name || '').toUpperCase();
+        const nameB = (b?.item_name || b?.display_name || '').toUpperCase();
         return nameA.localeCompare(nameB);
     });
 }
-
 
 // ─── FIX 9: renderMenuGridTraditional — removed 400ms artificial delay ────────
 // Skeletons show immediately; items replace them after a single microtask tick.
@@ -3048,7 +2694,7 @@ async function renderMenuGridTraditional(items) {
                 ${allergenBadge ? `<div style="flex-shrink:0;display:flex;align-items:center;">${allergenBadge}</div>` : ''}
               </div>
               <div class="item-footer flex justify-between items-center mt-2">
-                    <span class="item-price font-bold">${displayPrice}</span>
+                <span class="item-price font-bold ${hasMenuTypeGrpDtls ? 'invisible' : ''}">${displayPrice}</span>
                 <button class="add-btn bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded w-full max-w-[100px]" data-item-id="${id}">Add to Cart</button>
               </div>
             </div>
@@ -3159,19 +2805,11 @@ function buildItemCardHTML(item, index, restaurantLogo) {
 
     let displayPrice = '';
     if (hasMenuTypeGrpDtls) {
-        //const lowestPrice = window._lowestPriceCache?.get(item.item_no) ?? getLowestModifierPrice(item);
-        //if (lowestPrice !== null && lowestPrice > 0) {
-        //    displayPrice = `$${lowestPrice.toFixed(2)}`;
-        //} else if (!isNaN(priceValue) && priceValue > 0) {
-        //    displayPrice = `$${priceValue.toFixed(2)}`;
-        //}
-        if (!isNaN(priceValue) && priceValue > 0) {
+        const lowestPrice = window._lowestPriceCache?.get(item.item_no) ?? getLowestModifierPrice(item);
+        if (lowestPrice !== null && lowestPrice > 0) {
+            displayPrice = `$${lowestPrice.toFixed(2)}`;
+        } else if (!isNaN(priceValue) && priceValue > 0) {
             displayPrice = `$${priceValue.toFixed(2)}`;
-        } else {
-            const lowestPrice = window._lowestPriceCache?.get(item.item_no) ?? getLowestModifierPrice(item);
-            if (lowestPrice !== null && lowestPrice > 0) {
-                displayPrice = `$${lowestPrice.toFixed(2)}`;
-            }
         }
     } else {
         if (!isNaN(priceValue) && priceValue > 0) {
@@ -3241,7 +2879,7 @@ function buildItemCardHTML(item, index, restaurantLogo) {
                 <h3 class="font-semibold">${item.item_desc || item.display_name || item.item_name}</h3>
                 <div style="display:flex;align-items:flex-start;gap:8px;">
                     <p class="item-description text-sm text-gray-600" style="flex:1;">
-                        ${item.describe_info || item.item_desc}
+                        ${item.describe_info || item.item_desc || ''}
                     </p>
                     ${allergenBadge
             ? `<div style="flex-shrink:0;display:flex;align-items:center;">${allergenBadge}</div>`
@@ -3375,53 +3013,6 @@ function menuGridClickHandler(e) {
 
     const displayPrice = !shouldHidePrice ? `$${priceValue.toFixed(2)}` : '';
     openItemModal(fullItem, imageUrl, displayPrice, fullItem.category_code || '');
-}
-
-
-const _decodedImagePool = new Map();
-const DECODED_POOL_MAX = 400; // ~400 menu images max
-
-function poolImage(url) {
-    if (!url || _decodedImagePool.has(url)) return;
-    if (_decodedImagePool.size >= DECODED_POOL_MAX) {
-        // Evict oldest entry
-        const firstKey = _decodedImagePool.keys().next().value;
-        _decodedImagePool.delete(firstKey);
-    }
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = url;
-    img.decode?.().catch(() => { });
-    _decodedImagePool.set(url, img);
-}
-
-/**
- * After a grid render, replace each <img> with its pooled twin (already
- * downloaded + decoded). Pooled images render instantly with no request.
- * Non-pooled images are added to the pool for next time.
- */
-function swapInPooledImages(container) {
-    container.querySelectorAll('.menu-item .item-image img').forEach(img => {
-        const url = img.src;
-        if (!url) return;
-        const pooled = _decodedImagePool.get(url);
-        if (pooled && pooled.complete && pooled.naturalWidth > 0) {
-            // Clone attributes/styles onto the pooled node and swap
-            const clone = pooled.cloneNode();
-            clone.alt = img.alt;
-            clone.className = img.className + ' loaded';
-            clone.style.cssText = img.style.cssText;
-            clone.style.opacity = '1';
-            img.replaceWith(clone);
-        } else {
-            // First sighting — pool it once it finishes loading
-            if (img.complete && img.naturalWidth > 0) {
-                _decodedImagePool.set(url, img.cloneNode());
-            } else {
-                img.addEventListener('load', () => poolImage(url), { once: true });
-            }
-        }
-    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3830,7 +3421,6 @@ async function renderCategoryByCodeWorkFlow(categoryCode, selectedLanguage = '')
         container.appendChild(sectionEl);
 
         if (typeof renderMenuGrid === 'function') await renderMenuGrid(itemsToRender);
-        swapInPooledImages(container);
         currentRenderController = null;
 
     } catch (error) {
@@ -3961,8 +3551,8 @@ async function renderItemsForCategory(categoryCode, selectedLanguage, container,
             }
         })
     );
-
-
+    
+    
     const successfulItems = translatedItems.filter(r => r.status === 'fulfilled').map(r => r.value);
     if (!successfulItems.length) { if (!isSubcategory) container.innerHTML = `<p class="text-red-500">Failed to load items.</p>`; return; }
     const sortedItems = MENU_CONFIG.OPTIONS.sortStickyItemsFirst ? sortItemsByMobileSticky(successfulItems) : successfulItems;
@@ -4306,107 +3896,15 @@ function triggerCartArrival() {
     }
 }
 
-//export function updateCartCount() {
-
-
-//    console.log('🔢 updateCartCount called');
-
-//    const orderObj = useOrder();
-//    const order = orderObj?.order;
-
-//    // 1. Initial Null Check
-//    if (!order || !order.sales_dtls) {
-//        hideCartUI();
-//        return;
-//    }
-
-//    const salesDtls = order.sales_dtls || [];
-
-//    // 2. Combined Logic: Deduplicate and Identify Base Food Items
-//    // We do this in one pass to keep the UI snappy
-//    const seen = new Set();
-//    const baseFoodItems = salesDtls.filter(i => {
-//        const key = `${i.s_no ?? ''}-${i.item_no ?? ''}`;
-
-//        // Skip if we've seen this specific line item already
-//        if (seen.has(key)) return false;
-//        seen.add(key);
-
-//        // Check if it's a "Base" item (not a modifier)
-//        const isBase = String(i.s_no) === String(i.parent_sno || i.s_no);
-
-//        // Check if it's a real product (not a system charge)
-//        const isNotCharge = i.item_no !== 'TAKEAWAY_CHARGE' && i.item_type !== 'CHARGE';
-
-//        return isBase && isNotCharge;
-//    });
-
-//    const itemCount = baseFoodItems.length;
-
-//    console.log('🔢 Cart count debug:', {
-//        totalRows: salesDtls.length,
-//        baseFoodItems: itemCount
-//    });
-
-//    // 3. Early Exit for Empty Cart (Ghost Cart Protection)
-//    if (itemCount === 0) {
-//        console.log('🛒 No food items found. Hiding UI.');
-//        hideCartUI();
-//        return;
-//    }
-
-//    // 4. Update UI for Active Cart
-//    const total = parseFloat(order.net_amt || 0);
-//    const formattedTotal = `$${total.toFixed(2)}`;
-
-//    const badge = document.getElementById("cartBadge");
-//    const subtotalEl = document.getElementById("navSubtotal");
-//    const bottomNav = document.querySelector('.bottom-nav');
-//    const cartLabel = document.querySelector('.nav-item[onclick="toggleCart()"] .nav-label');
-
-//    if (badge) {
-//        badge.style.display = 'flex';
-//        badge.textContent = itemCount;
-
-//        // ← add these 4 lines:
-//        badge.style.transition = 'none';
-//        badge.style.transform = 'scale(1.5)';
-//        setTimeout(() => {
-//            badge.style.transition = 'transform 0.2s ease';
-//            badge.style.transform = 'scale(1)';
-//        }, 10);
-//    }
-
-//    if (subtotalEl) {
-//        subtotalEl.style.display = "block";
-//        subtotalEl.textContent = formattedTotal;
-//    }
-
-//    if (bottomNav) {
-//        bottomNav.style.display = "flex";
-//        bottomNav.classList.add('show');
-//    }
-
-//    if (cartLabel) {
-//        cartLabel.style.display = "none";
-//    }
-
-//    console.log('✅ Cart UI updated:', { items: itemCount, total: formattedTotal });
-//}
-
-
 export function updateCartCount() {
+
+
     console.log('🔢 updateCartCount called');
-    const addonModal = document.getElementById('addonModal');
-    const cartModal = document.getElementById('cartModal');
-    if (addonModal?.classList.contains('show') || cartModal?.classList.contains('active')) {
-        console.log('⏭️ updateCartCount skipped — modal is open');
-        return;
-    }
 
     const orderObj = useOrder();
     const order = orderObj?.order;
 
+    // 1. Initial Null Check
     if (!order || !order.sales_dtls) {
         hideCartUI();
         return;
@@ -4414,36 +3912,53 @@ export function updateCartCount() {
 
     const salesDtls = order.sales_dtls || [];
 
-    // Deduplicate and identify base food items
+    // 2. Combined Logic: Deduplicate and Identify Base Food Items
+    // We do this in one pass to keep the UI snappy
     const seen = new Set();
     const baseFoodItems = salesDtls.filter(i => {
         const key = `${i.s_no ?? ''}-${i.item_no ?? ''}`;
+
+        // Skip if we've seen this specific line item already
         if (seen.has(key)) return false;
         seen.add(key);
+
+        // Check if it's a "Base" item (not a modifier)
         const isBase = String(i.s_no) === String(i.parent_sno || i.s_no);
+
+        // Check if it's a real product (not a system charge)
         const isNotCharge = i.item_no !== 'TAKEAWAY_CHARGE' && i.item_type !== 'CHARGE';
+
         return isBase && isNotCharge;
     });
 
     const itemCount = baseFoodItems.length;
-    console.log('🔢 Cart count debug:', { totalRows: salesDtls.length, baseFoodItems: itemCount });
 
+    console.log('🔢 Cart count debug:', {
+        totalRows: salesDtls.length,
+        baseFoodItems: itemCount
+    });
+
+    // 3. Early Exit for Empty Cart (Ghost Cart Protection)
     if (itemCount === 0) {
         console.log('🛒 No food items found. Hiding UI.');
         hideCartUI();
         return;
     }
 
+    // 4. Update UI for Active Cart
     const total = parseFloat(order.net_amt || 0);
     const formattedTotal = `$${total.toFixed(2)}`;
-    const tableNo = order.table_no || '';
-    const svcType = order.service_type_info || '';
 
-    // ── Badge (legacy, keep for anything still reading it) ────────────────────
-    const badge = document.getElementById('cartBadge');
+    const badge = document.getElementById("cartBadge");
+    const subtotalEl = document.getElementById("navSubtotal");
+    const bottomNav = document.querySelector('.bottom-nav');
+    const cartLabel = document.querySelector('.nav-item[onclick="toggleCart()"] .nav-label');
+
     if (badge) {
         badge.style.display = 'flex';
         badge.textContent = itemCount;
+
+        // ← add these 4 lines:
         badge.style.transition = 'none';
         badge.style.transform = 'scale(1.5)';
         setTimeout(() => {
@@ -4452,118 +3967,19 @@ export function updateCartCount() {
         }, 10);
     }
 
-    // ── Left: item count ──────────────────────────────────────────────────────
-    const itemCountEl = document.getElementById('navItemCount');
-    if (itemCountEl) {
-        itemCountEl.textContent = `${itemCount} item${itemCount !== 1 ? 's' : ''}`;
-    }
-
-    //const imgContainer = document.getElementById('navItemImages');
-    //if (imgContainer) {
-    //    const restaurantLogo = RESTAURANT_CONFIG?.logo || '/img/LIHO-logo.jpg';
-    //    const top3 = baseFoodItems.slice(0, 3);
-    //    imgContainer.innerHTML = top3.map((item, idx) => {
-    //        const rawUrl = item.tqr_image_url || item.item_image || item.image;
-    //        let url;
-
-    //        if (rawUrl && rawUrl !== '' && !rawUrl.includes('Logo.png')) {
-    //            url = rawUrl.startsWith('public/upload/')
-    //                ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(rawUrl)}`
-    //                : rawUrl;
-    //        } else {
-    //            const gMap = window.globalImageMap;
-    //            const idKey = String(item.item_no || item.product_code || '');
-    //            const nameKey = (item.item_desc || item.item_name || '').trim().toLowerCase();
-
-    //            // ✅ Parent row has no image — check child rows (size variant carries the image)
-    //            const childUrl = salesDtls
-    //                .filter(c => String(c.parent_sno) === String(item.s_no) &&
-    //                    String(c.s_no) !== String(item.s_no))
-    //                .reduce((found, c) => {
-    //                    if (found) return found;
-    //                    const cKey = String(c.item_no || '');
-    //                    const cName = (c.item_desc || c.item_name || '').trim().toLowerCase();
-    //                    return (cKey && gMap?.get(cKey)) || (cName && gMap?.get(cName)) || null;
-    //                }, null);
-
-    //            url = (idKey && gMap?.get(idKey))
-    //                || (nameKey && gMap?.get(nameKey))
-    //                || childUrl
-    //                || restaurantLogo;
-    //        }
-
-    //        const zIndex = top3.length - idx;
-    //        const offset = idx > 0 ? 'margin-left:-10px;' : '';
-    //        return `<img src="${url}" alt=""
-    //            class="nav-cart-img"
-    //            style="z-index:${zIndex};${offset}"
-    //            onerror="this.onerror=null;this.src='${restaurantLogo}';">`;
-    //    }).join('');
-    //}
-    const imgContainer = document.getElementById('navItemImages');
-    if (imgContainer) {
-        const restaurantLogo = RESTAURANT_CONFIG?.logo || '/img/LIHO-logo.jpg';
-        const top3 = baseFoodItems.slice(0, 4);
-        imgContainer.innerHTML = top3.map((item, idx) => {
-            const rawUrl = item.tqr_image_url || item.item_image || item.image;
-            let url;
-
-            if (rawUrl && rawUrl !== '' && !rawUrl.includes('Logo.png')) {
-                url = rawUrl.startsWith('public/upload/')
-                    ? `/api/GetImageProxy?imageUrl=${encodeURIComponent(rawUrl)}`
-                    : rawUrl;
-            } else {
-                const gMap = window.globalImageMap;
-                const idKey = String(item.item_no || item.product_code || '');
-                const nameKey = (item.item_desc || item.item_name || '').trim().toLowerCase();
-
-                // ✅ Parent row has no image — check child rows (size variant carries the image)
-                const childUrl = salesDtls
-                    .filter(c => String(c.parent_sno) === String(item.s_no) &&
-                        String(c.s_no) !== String(item.s_no))
-                    .reduce((found, c) => {
-                        if (found) return found;
-                        const cKey = String(c.item_no || '');
-                        const cName = (c.item_desc || c.item_name || '').trim().toLowerCase();
-                        return (cKey && gMap?.get(cKey)) || (cName && gMap?.get(cName)) || null;
-                    }, null);
-
-                url = (idKey && gMap?.get(idKey))
-                    || (nameKey && gMap?.get(nameKey))
-                    || childUrl
-                    || restaurantLogo;
-            }
-
-            const zIndex = top3.length - idx;
-            const offset = idx > 0 ? 'margin-left:-12px;' : '';
-            return `<img src="${url}" alt=""
-                class="nav-cart-img"
-                style="z-index:${zIndex};${offset}"
-                onerror="this.onerror=null;this.src='${restaurantLogo}';">`;
-        }).join('');
-    }
-
-    // ── Right: total + service info ───────────────────────────────────────────
-    const subtotalEl = document.getElementById('navSubtotal');
     if (subtotalEl) {
-        subtotalEl.style.display = 'block';
+        subtotalEl.style.display = "block";
         subtotalEl.textContent = formattedTotal;
     }
 
-    const serviceInfoEl = document.getElementById('navServiceInfo');
-    if (serviceInfoEl) {
-        serviceInfoEl.textContent = tableNo ? `${svcType} : ${tableNo}` : svcType;
-    }
-
-    // ── Show nav ──────────────────────────────────────────────────────────────
-    const bottomNav = document.querySelector('.bottom-nav');
     if (bottomNav) {
-        bottomNav.style.display = 'flex';
+        bottomNav.style.display = "flex";
         bottomNav.classList.add('show');
     }
 
-    const cartLabel = document.querySelector('.nav-item[onclick="toggleCart()"] .nav-label');
-    if (cartLabel) cartLabel.style.display = 'none';
+    if (cartLabel) {
+        cartLabel.style.display = "none";
+    }
 
     console.log('✅ Cart UI updated:', { items: itemCount, total: formattedTotal });
 }
@@ -4579,18 +3995,9 @@ function hideCartUI() {
     if (badge) badge.style.display = "none";
     if (subtotalEl) subtotalEl.style.display = "none";
 
-    // ✅ Add this — clear stale images when cart is empty
-    const imgContainer = document.getElementById('navItemImages');
-    if (imgContainer) imgContainer.innerHTML = '';
-
-    const itemCountEl = document.getElementById('navItemCount');
-    if (itemCountEl) itemCountEl.textContent = '';
-
     if (bottomNav) {
         bottomNav.style.display = "none";
         bottomNav.classList.remove('show');
-        bottomNav.classList.add('hide');
-
     }
 
     if (cartLabel) {
@@ -4601,48 +4008,38 @@ function hideCartUI() {
 
 
 
+
 async function handleRemoveClick(e) {
     try {
         const target = e.target.closest('.cart-remove-btn');
         if (!target) return;
+
         const sNo = target.getAttribute('data-sno');
         if (!sNo) return;
 
-        // ✅ Prevent double-fire: ignore if already processing this s_no
-        if (window._removingItems?.has(sNo)) {
-            console.log('⏭️ Already removing s_no:', sNo, '— ignoring duplicate click');
-            return;
-        }
-        window._removingItems = window._removingItems || new Set();
-        window._removingItems.add(sNo);
-
         const { order } = useOrder();
-        if (!order || !Array.isArray(order.sales_dtls)) {
-            window._removingItems.delete(sNo);
-            return;
-        }
+        if (!order || !Array.isArray(order.sales_dtls)) return;
 
         console.log('🗑️ Remove button clicked for s_no:', sNo);
 
+        // Find the order item to delete
         const orderItem = order.sales_dtls.find(item => String(item.s_no) === String(sNo));
         if (!orderItem) {
             console.error('❌ Item not found:', sNo);
-            window._removingItems.delete(sNo);
             return;
         }
 
-        const activeVoucherCode = order.voucher_code || null;
+        // ✅ Use individual item deletion with await
         await deleteIndividualItem(orderItem);
 
-        if (activeVoucherCode) {
-            console.log('🧹 Clearing voucher after item removal:', activeVoucherCode);
-            await removeVoucherAndRecalculate(activeVoucherCode);
-        }
-
+        // ✅ Re-render UI after deletion
         setTimeout(() => {
-            if (typeof renderCartFromOrder === 'function') renderCartFromOrder();
-            if (typeof updateCartCount === 'function') updateCartCount();
-            window._removingItems.delete(sNo);
+            if (typeof renderCartFromOrder === 'function') {
+                renderCartFromOrder();
+            }
+            if (typeof updateCartCount === 'function') {
+                updateCartCount();
+            }
         }, 50);
 
     } catch (error) {
@@ -4650,9 +4047,9 @@ async function handleRemoveClick(e) {
         if (typeof renderCartFromOrder === 'function') {
             setTimeout(renderCartFromOrder, 100);
         }
-        window._removingItems?.delete(target?.getAttribute('data-sno'));
     }
 }
+
 
 function removeItemByLineId(lineId) {
     const { order, setOrder } = useOrder();
@@ -5000,11 +4397,8 @@ async function updateQuantityBySno(sNo, change) {
                     } else if (typeof deleteOrderItem === 'function') {
                         await deleteOrderItem(orderItem);
                     }
-
-                    // ✅ FIX 1: Read post-delete state before syncing
-                    const { order: postDeleteOrder } = useOrder();
                     console.log('📡 Syncing deletion...');
-                    const syncResult = await updateOrderCacheOnServer(postDeleteOrder);
+                    const syncResult = await updateOrderCacheOnServer();
                     if (!syncResult.success) {
                         console.error('❌ Failed to sync deletion:', syncResult.error);
                     } else {
@@ -5014,138 +4408,49 @@ async function updateQuantityBySno(sNo, change) {
                     console.error('❌ Background sync error:', error);
                 } finally {
                     window._manualOrderUpdate = false;
-                    // ✅ FIX 2: Drain any blocked WS message after deletion sync
-                    window._blockWSSync = false;
-                    window.sokWebSocket?.drainPendingCacheUpdate();
                 }
             })();
 
             return;
         }
 
-        // ── Clear stale discount before qty update ────────────────────────────
+        // ── Update quantity ───────────────────────────────────────────────────
+
+        // ✅ When a voucher is active, clear pro_disc_amt BEFORE changeItemQuantity
+        // pos.js calcOrderAmt reads pro_disc_amt to compute net_amt.
+        // With stale discount on items: net = sub(5.90) - pro_disc(5.90) = 0.00 ❌
+        // Must use immutable spread — direct mutation corrupts changeItemQuantity's
+        // internal qty calculation and causes children to double (e.g. qty 2→4).
         const activeVoucherCode = order?.voucher_code;
         if (activeVoucherCode) {
-            setOrder({
+            // Build a clean order with all pro_disc_amt zeroed
+            const cleanedOrder = {
                 ...order,
                 sales_dtls: order.sales_dtls.map(item => ({
                     ...item,
                     pro_disc_amt: '0.00',
                     disc_amt: '0.00',
                 })),
-            });
-            console.log('🧹 Cleared pro_disc_amt before qty update');
+            };
+
+            // Push clean state to Zustand BEFORE changeItemQuantity reads from store
+            setOrder(cleanedOrder);
+            console.log('🧹 Cleared pro_disc_amt (immutable) before qty update');
         }
 
+        // changeItemQuantity reads from the Zustand store — must use the fresh order ref
+        // Re-fetch order and orderItem after potential setOrder above
         const { order: freshOrder } = useOrder();
+        const freshOrderItem = freshOrder.sales_dtls.find(
+            item => String(item.s_no) === String(sNo)
+        );
 
-        // ── Update all rows manually ──────────────────────────────────────────
-        const updatedDtls = freshOrder.sales_dtls.map(row => {
-            const recomputeTax = (newSubTotal) => {
-                const taxRate = parseFloat(row.tax_rate || row.tax_value || 0);
-                if (taxRate === 0 || newSubTotal === 0) return '0.000000';
-                const shouldAbsorb = freshOrder.absorb_tax === 'Y'
-                    || row.is_absorbtax === 1
-                    || row.header_is_absorbtax === 'Y';
-                const tax = shouldAbsorb
-                    ? newSubTotal * taxRate / (100 + taxRate)
-                    : newSubTotal * taxRate / 100;
-                return tax.toFixed(6);
-            };
-
-            if (String(row.s_no) === String(sNo)) {
-                const newSubTotal = parseFloat(row.unit_price || 0) * newQty;
-                return {
-                    ...row,
-                    qty: newQty,
-                    sub_total: newSubTotal.toFixed(2),
-                    tax_amt: recomputeTax(newSubTotal),
-                };
-            }
-
-            if (String(row.parent_sno) !== String(sNo)) return row;
-
-            if (row._qty_per_serving !== undefined && row._qty_per_serving !== null) {
-                const perServing = row._qty_per_serving || 1;
-                const scaledQty = newQty * perServing;
-                const scaledSubTotal = parseFloat(row.unit_price || 0) * scaledQty;
-                console.log(`🔢 Scaled: ${row.item_name} | ${newQty} × ${perServing} = ${scaledQty} | $${scaledSubTotal.toFixed(2)}`);
-                return {
-                    ...row,
-                    qty: scaledQty,
-                    sub_total: scaledSubTotal.toFixed(2),
-                    tax_amt: recomputeTax(scaledSubTotal),
-                    _qty_per_serving: perServing,
-                };
-            }
-
-            const childSubTotal = parseFloat(row.unit_price || 0) * newQty;
-            console.log(`🔄 Child mirrored: ${row.item_name} qty=${newQty}`);
-            return {
-                ...row,
-                qty: newQty,
-                sub_total: childSubTotal.toFixed(2),
-                tax_amt: recomputeTax(childSubTotal),
-            };
-        });
-
-        const { setOrder: setFreshOrder } = useOrder();
-        setFreshOrder({ ...freshOrder, sales_dtls: updatedDtls });
-        console.log(`✅ Manual qty update complete for s_no: ${sNo} → newQty: ${newQty}`);
-
-        // ── Block WebSocket from overwriting local state ──────────────────────
-        window._blockWSSync = true;
-        // ✅ FIX 3: drain on release instead of silent clear
-        setTimeout(() => {
-            window._blockWSSync = false;
-            window.sokWebSocket?.drainPendingCacheUpdate();
-        }, 5000);
-
-        // ── Snapshot _qty_per_serving before WS sync wipes it ────────────────
-        const qtyPerServingSnapshot = new Map();
-        const { order: snapOrder } = useOrder();
-        (snapOrder?.sales_dtls || []).forEach(row => {
-            if (row._qty_per_serving !== undefined) {
-                qtyPerServingSnapshot.set(String(row.s_no), row._qty_per_serving);
-            }
-        });
-
-        if (qtyPerServingSnapshot.size > 0) {
-            console.log('📸 Snapshotted _qty_per_serving for', qtyPerServingSnapshot.size, 'rows');
-
-            const rehydrate = () => {
-                const { order: syncedOrder, setOrder: setSyncedOrder } = useOrder();
-                if (!syncedOrder?.sales_dtls) return;
-
-                const needsUpdate = syncedOrder.sales_dtls.some(row =>
-                    qtyPerServingSnapshot.has(String(row.s_no)) &&
-                    row._qty_per_serving === undefined
-                );
-
-                if (needsUpdate) {
-                    setSyncedOrder({
-                        ...syncedOrder,
-                        sales_dtls: syncedOrder.sales_dtls.map(row => {
-                            const perServing = qtyPerServingSnapshot.get(String(row.s_no));
-                            return (perServing !== undefined && row._qty_per_serving === undefined)
-                                ? { ...row, _qty_per_serving: perServing }
-                                : row;
-                        }),
-                    });
-                    console.log('💉 Re-hydrated _qty_per_serving after WS sync');
-                }
-            };
-
-            document.addEventListener('orderUpdated', rehydrate, { once: true });
-            setTimeout(rehydrate, 2000);
-        }
-
-        // ── Recalculate order totals ──────────────────────────────────────────
-        const { order: recalcOrder, setOrder: setRecalcOrder } = useOrder();
-        if (typeof calcOrderAmt === 'function') {
-            const recalculated = calcOrderAmt(recalcOrder, recalcOrder.sales_dtls);
-            setRecalcOrder(recalculated);
-            console.log(`💰 Recalculated totals: sub=${recalculated.sub_total} net=${recalculated.net_amt}`);
+        if (typeof changeItemQuantity === 'function') {
+            changeItemQuantity(newQty, freshOrderItem || orderItem);
+        } else {
+            const target = freshOrderItem || orderItem;
+            target.qty = newQty;
+            target.sub_total = (Number(target.unit_price) * newQty).toFixed(2);
         }
 
         // ── Re-apply or clear voucher after qty change ────────────────────────
@@ -5153,18 +4458,22 @@ async function updateQuantityBySno(sNo, change) {
         if (appliedVoucherCode) {
             console.log('🔄 Qty changed with voucher active — re-evaluating:', appliedVoucherCode);
 
-            let voucher = typeof getAvailableVouchers === 'function'
-                ? getAvailableVouchers().find(v => v.code === appliedVoucherCode)
-                : null;
+            // Try available list first, fall back to raw Ascentis cache if TTL expired
+            let voucher = null;
+            const vouchers = typeof getAvailableVouchers === 'function'
+                ? getAvailableVouchers()
+                : [];
+            voucher = vouchers.find(v => v.code === appliedVoucherCode);
 
             if (!voucher) {
+                // TTL expired — rebuild from raw cache
                 const cache = useCache?.();
                 const rawList = cache?.memberRawData?.data?.VoucherLists
                     || cache?.memberRawData?.VoucherLists
                     || [];
                 const rawFound = rawList.find(v => v.VoucherNo === appliedVoucherCode);
                 if (rawFound) {
-                    console.log('🔄 Voucher rebuilt from raw cache');
+                    console.log('🔄 Voucher rebuilt from raw Ascentis cache');
                     voucher = {
                         code: rawFound.VoucherNo,
                         name: rawFound.VoucherTypeDescription?.trim() || rawFound.VoucherTypeName || 'Voucher',
@@ -5178,12 +4487,16 @@ async function updateQuantityBySno(sNo, change) {
 
             if (voucher) {
                 const result = await applyVoucherAndRecalculate(voucher);
+
                 if (result?.success) {
                     console.log('✅ Voucher re-applied after qty change, discount:', result.discount);
                 } else if (result?.shouldRemove) {
                     console.log('⚠️ Voucher no longer applicable — clearing');
                     await removeVoucherAndRecalculate(appliedVoucherCode);
-                    showToast('Voucher removed — quantity no longer meets requirements', 'info', 'Voucher', 3000);
+                    showToast(
+                        'Voucher removed — quantity no longer meets requirements',
+                        'info', 'Voucher', 3000
+                    );
                 }
             } else {
                 console.log('⚠️ Applied voucher not found anywhere — clearing');
@@ -5194,12 +4507,11 @@ async function updateQuantityBySno(sNo, change) {
         if (typeof renderCartFromOrder === 'function') renderCartFromOrder();
         if (typeof updateCartCount === 'function') updateCartCount();
 
-        // ── Sync to server — release block as soon as sync finishes ──────────
+        // ── Sync to server ────────────────────────────────────────────────────
         (async () => {
             try {
-                const { order: finalOrder } = useOrder();
                 console.log('📡 Syncing quantity update...');
-                const syncResult = await updateOrderCacheOnServer(finalOrder);
+                const syncResult = await updateOrderCacheOnServer();
                 if (!syncResult.success) {
                     console.error('❌ Sync failed:', syncResult.error);
                 } else {
@@ -5209,9 +4521,6 @@ async function updateQuantityBySno(sNo, change) {
                 console.error('❌ Background sync error:', error);
             } finally {
                 setTimeout(() => { window._manualOrderUpdate = false; }, 100);
-                // ✅ Release block immediately — don't wait for the 5s timeout
-                window._blockWSSync = false;
-                window.sokWebSocket?.drainPendingCacheUpdate();
             }
         })();
 
@@ -5220,7 +4529,6 @@ async function updateQuantityBySno(sNo, change) {
         window._manualOrderUpdate = false;
     }
 }
-
 
 window.debugOrderId = async function () {
     console.group('🔍 Complete Order ID Debug');
@@ -5510,7 +4818,8 @@ function renderVisibleCategorySections(categories = []) {
             const id = item.item_no || item.id;
             const emoji = item.emoji || "🍽️";
             const name = item.item_name || item.name || "Unnamed";
-            const desc = item.item_desc || item.description || "";
+            const desc = item.description || item.item_desc;
+            //const desc = item.item_desc || item.description || "";
             const price = parseFloat(getPriceByServiceType(item));
             const displayPrice = price > 0
                 ? `$${price.toFixed(2)}`
@@ -5875,7 +5184,7 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
         item_desc: item.item_desc || item.item_name || ''
     };
 
-    // ==================== ENRICH WITH MODIFIER DATA ====================
+    // ==================== ENRICH WITH MODIFIER DATA ====================  ← ADD HERE
     const cacheItems = useCache()?.items || [];
     let enrichedItems = cacheItems;
     if (!enrichedItems.length) {
@@ -5920,6 +5229,7 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
     // ==================== REMARKS & FEATURE DETECTION ====================
     let allItemRemarks = cache.itemRemarks || [];
 
+
     if (typeof allItemRemarks === 'string') {
         try { allItemRemarks = JSON.parse(allItemRemarks); } catch { allItemRemarks = []; }
     }
@@ -5952,10 +5262,6 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
     }
 
     if (showModal) {
-        if (window.modalState) window.modalState.addonOpen = true;
-        const bottomNav = document.querySelector('.bottom-nav');
-        if (bottomNav) bottomNav.style.display = 'none';
-        window._blockWSSync = true;
         const addonData = hasAddons ? getAddonsByAddOnName(item.add_on_name) : { cat_dtls: [], item_dtls: [] };
         const enrichedCatDtls = (addonData.cat_dtls || []).map(grp => {
             if (!grp.category_code) {
@@ -5999,12 +5305,6 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
             .join(', ');
     }
 
-    // ==================== TOPPING DETECTION HELPER ====================
-    function isTopping(item) {
-        return (item.uom || '').toUpperCase() === 'TOPPING' ||
-            (item.category_code || '').toUpperCase() === 'EXTRA OPTIONS';
-    }
-
     const resultItems = [];
 
     // ==================== EDIT MODE ====================
@@ -6043,28 +5343,15 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
 
         console.log('📝 EDIT parentRemarks:', parentRemarks, '| hasRealEditChildren:', hasRealEditChildren);
 
+        // ✅ FIX: track ds_no for edit mode
         let currentDsNo = 1;
-        const newQty = originalItem.qty ?? 1;
 
-        //resultItems.push({
-        //    ...originalItem,
-        //    qty: newQty,
-        //    remarks: parentRemarks,
-        //    unit_price: parentPrice,
-        //    sub_total: parentSubTotal,
-        //    ds_no: currentDsNo
-        //});
-
-        const hasEditChildren = selectedAddons.length > 0;
         resultItems.push({
             ...originalItem,
-            qty: newQty,
             remarks: parentRemarks,
-            unit_price: hasEditChildren ? 0 : parentPrice,
-            price: hasEditChildren ? 0 : parentPrice,
-            net_amt: hasEditChildren ? 0 : parentPrice,
-            sub_total: hasEditChildren ? 0 : parentSubTotal,
-            ds_no: currentDsNo
+            unit_price: parentPrice,
+            sub_total: parentSubTotal,
+            ds_no: currentDsNo                          // ✅ FIX: assign ds_no 1 to parent
         });
 
         selectedAddons.forEach(addon => {
@@ -6087,10 +5374,11 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
                 menu_type: ''
             };
             const childSNo = ++newLastSNo;
-            currentDsNo++;
+            currentDsNo++;                              // ✅ FIX: increment ds_no for each child
 
             const addonQty = addon.qty || 1;
             const addonPrice = addon.price !== undefined ? parseFloat(addon.price) : getItemPrice(addonSource);
+            const addonSubTotal = addonQty * addonPrice;
             const addonCategory = addon.modifier_name || addon.category || addonSource.category_code;
             const addonRemarks = remarksByParentCategory[addonCategory]
                 ? buildRemarksText(remarksByParentCategory[addonCategory])
@@ -6106,31 +5394,13 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
                 },
                 childSNo,
                 parentSNo,
-                addonQty * addonPrice
+                addonSubTotal
             );
-            addonRecord.ds_no = currentDsNo;
+            addonRecord.ds_no = currentDsNo;            // ✅ FIX: assign sequential ds_no
             addonRecord.order_seq = originalItem.order_seq || 1;
             addonRecord.order_seq_type = originalItem.order_seq_type || "New";
             addonRecord.order_datetime = originalItem.order_datetime;
             addonRecord.take_away_item = isTakeawayLocal;
-
-            //// ── FIX: same as new item mode ────────────────────────────────────────
-            if (parseFloat(addonRecord.unit_price || 0) > 0) {
-                addonRecord.modifier_name = '';
-            }
-            // ─────────────────────────────────────────────────────────────────────
-
-            if (isTopping(addonRecord)) {
-                addonRecord.qty = newQty * addonQty;
-                addonRecord.sub_total = parseFloat(addonRecord.unit_price || 0) * addonRecord.qty;
-                addonRecord._qty_per_serving = addonQty;
-                console.log(`🧂 Topping scaled: ${addonRecord.item_name} | ${newQty} × ${addonQty} = ${addonRecord.qty}`);
-            } else {
-                addonRecord.qty = newQty;
-                addonRecord.sub_total = parseFloat(addonRecord.unit_price || 0) * newQty;
-                addonRecord._qty_per_serving = 1;
-            }
-
             resultItems.push(addonRecord);
         });
     }
@@ -6167,9 +5437,7 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
                     s_no: newSNo,
                     parent_sno: isParent ? newSNo : (addon.parent_sno + (newSNo - addon.s_no)),
                     remarks: remarksForItem,
-                    take_away_item: isTakeawayLocal,
-                    // ✅ Store per-serving qty for toppings so updateQuantityBySno can scale correctly
-                    _qty_per_serving: isTopping(addon) ? (addon.qty || 1) : 1,
+                    take_away_item: isTakeawayLocal
                 };
             }));
         } else if (selectedAddons.length > 0) {
@@ -6184,17 +5452,14 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
             const parentRemarksText = buildRemarksText(unmatchedRemarks);
             console.log('📝 Parent remarks (unmatched):', parentRemarksText);
 
+            // ✅ FIX: track ds_no for new item mode
             let currentDsNo = 1;
 
-            //const parentItem = createSalesDtlsRecord(
-            //    { ...item, qty: 1, price: itemPrice, remarks: parentRemarksText },
-            //    parentSNo, parentSNo, itemPrice
-            //);
             const parentItem = createSalesDtlsRecord(
-                { ...item, qty: 1, unit_price: 0, price: 0, remarks: parentRemarksText },
-                parentSNo, parentSNo, 0
+                { ...item, qty: 1, price: itemPrice, remarks: parentRemarksText },
+                parentSNo, parentSNo, itemPrice
             );
-            parentItem.ds_no = currentDsNo;
+            parentItem.ds_no = currentDsNo;             // ✅ FIX: assign ds_no 1 to parent
             parentItem.take_away_item = isTakeawayLocal;
             resultItems.push(parentItem);
 
@@ -6218,10 +5483,11 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
                     menu_type: ''
                 };
                 const childSNo = ++newLastSNo;
-                currentDsNo++;
+                currentDsNo++;                          // ✅ FIX: increment ds_no for each child
 
                 const addonQty = addon.qty || 1;
                 const addonPrice = addon.price !== undefined ? parseFloat(addon.price) : getItemPrice(addonSource);
+                const addonSubTotal = addonQty * addonPrice;
                 const addonCategory = addon.modifier_name || addon.category || addonSource.category_code;
                 const matchingRemarks = selectedRemarks.filter(r => {
                     if (r.parent_category && r.parent_category === addonCategory) return true;
@@ -6241,27 +5507,10 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
                         remarks: addonRemarks,
                         modifier_name: addon.modifier_name || addon.category || addonSource.modifier_name || ""
                     },
-                    childSNo, parentSNo, addonQty * addonPrice
+                    childSNo, parentSNo, addonSubTotal
                 );
-                addonItem.ds_no = currentDsNo;
+                addonItem.ds_no = currentDsNo;          // ✅ FIX: assign sequential ds_no
                 addonItem.take_away_item = isTakeawayLocal;
-
-                // ── FIX: priced child rows must not carry modifier_name ───────────────
-                // modifier_name on a priced child causes calcOrderAmt to treat its parent
-                // as a modifier parent and exclude it from totals (double-count bug).
-                // Zero-price children (options/remarks) are fine — they don't affect totals.
-                if (parseFloat(addonItem.unit_price || 0) > 0) {
-                    addonItem.modifier_name = '';
-                }
-                // ─────────────────────────────────────────────────────────────────────
-
-                if (isTopping(addonItem)) {
-                    addonItem._qty_per_serving = addonQty;
-                    console.log(`🧂 Topping added: ${addonItem.item_name} | qty_per_serving=${addonQty}`);
-                } else {
-                    addonItem._qty_per_serving = 1;
-                }
-
                 resultItems.push(addonItem);
             });
         }
@@ -6311,6 +5560,7 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
 
     } else if (hasModifierGroups || hasAddons) {
         const beforeAddonItems = resultItemsWithSvc.map(i => ({ ...i }));
+        //const beforeAddonItems = structuredClone(resultItemsWithSvc);
 
         const beforeSubTotalMap = new Map(
             beforeAddonItems.map(i => [String(i.s_no), parseFloat(i.sub_total ?? 0)])
@@ -6345,11 +5595,6 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
             if (origRemarks.trim() && !currRemarks.trim()) {
                 i.remarks = origRemarks;
                 console.log('🔄 Restored remarks (addon path):', i.item_no, '->', i.remarks);
-            }
-
-            // ✅ Restore _qty_per_serving if promo engine stripped it
-            if (originalItem._qty_per_serving !== undefined && i._qty_per_serving === undefined) {
-                i._qty_per_serving = originalItem._qty_per_serving;
             }
         });
 
@@ -6459,6 +5704,9 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
         console.log('📝 Preserving remarks before addAlacarteItem:', remarksToPreserve);
 
         try {
+            //const remarksToPreserve = resultItemsWithSvc[0]?.remarks || "";
+            //console.log('📝 Preserving remarks:', remarksToPreserve);
+
             const apiResponse = addAlacarteItem(resultItemsWithSvc[0]);
 
             if (!apiResponse || !apiResponse.orderItems) {
@@ -6536,22 +5784,22 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
 
         console.log('🔧 After calcOrderAmt - sub_total:', finalOrder.sub_total, 'net_amt:', finalOrder.net_amt);
 
-        //if (parseFloat(finalOrder.sub_total || 0) === 0 && finalOrder.sales_dtls?.length > 0) {
-        //    console.warn('⚠️ calcOrderAmt returned zero totals — forcing recalc');menu_type
-        //    const recalcSubTotal = finalOrder.sales_dtls.reduce((sum, s) => {
-        //        return sum + parseFloat(s.sub_total || s.unit_price * (s.qty || 1) || 0);
-        //    }, 0);
-        //    const totalTax = finalOrder.sales_dtls.reduce((sum, s) => sum + parseFloat(s.tax_amt || 0), 0);
-        //    const totalSvc = finalOrder.sales_dtls.reduce((sum, s) => sum + parseFloat(s.svc_amt || 0), 0);
+        if (parseFloat(finalOrder.sub_total || 0) === 0 && finalOrder.sales_dtls?.length > 0) {
+            console.warn('⚠️ calcOrderAmt returned zero totals — forcing recalc');
+            const recalcSubTotal = finalOrder.sales_dtls.reduce((sum, s) => {
+                return sum + parseFloat(s.sub_total || s.unit_price * (s.qty || 1) || 0);
+            }, 0);
+            const totalTax = finalOrder.sales_dtls.reduce((sum, s) => sum + parseFloat(s.tax_amt || 0), 0);
+            const totalSvc = finalOrder.sales_dtls.reduce((sum, s) => sum + parseFloat(s.svc_amt || 0), 0);
 
-        //    finalOrder = {
-        //        ...finalOrder,
-        //        sub_total: recalcSubTotal.toFixed(2),
-        //        total_tax: totalTax.toFixed(2),
-        //        total_svc: totalSvc.toFixed(2),
-        //        net_amt: (recalcSubTotal + totalSvc).toFixed(2)
-        //    };
-        //}
+            finalOrder = {
+                ...finalOrder,
+                sub_total: recalcSubTotal.toFixed(2),
+                total_tax: totalTax.toFixed(2),
+                total_svc: totalSvc.toFixed(2),
+                net_amt: (recalcSubTotal + totalSvc).toFixed(2)
+            };
+        }
 
         console.log('Final sales_dtls count before setOrder:', finalOrder.sales_dtls?.length || 0);
         console.log('💰 Final order totals:', {
@@ -6564,42 +5812,34 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
         setOrder(finalOrder);
         setLastSNo(newLastSNo);
         window._blockWSSync = true;
-        updateOrderCacheOnServer(finalOrder).finally(() => {
-            window._blockWSSync = false;
-            window.sokWebSocket?.drainPendingCacheUpdate();
-        });
-        // Safety fallback in case the promise hangs
-        setTimeout(() => {
-            if (window._blockWSSync) {
-                window._blockWSSync = false;
-                window.sokWebSocket?.drainPendingCacheUpdate();
-            }
-        }, 3000);
+        setTimeout(() => { window._blockWSSync = false; }, 3000);
+        updateOrderCacheOnServer(finalOrder);
 
         const processFreeItemSelection = isFreeItem ? null : updatedOrderItems?.processFreeItemSelection;
 
         requestAnimationFrame(() => {
+            // Clean up modals
             const addonModal = document.getElementById('addonModal');
             const cartModal = document.getElementById('cartModal');
             const bottomNav = document.querySelector('.bottom-nav');
 
             if (addonModal) { addonModal.classList.remove('active'); addonModal.style.display = 'none'; }
             if (cartModal) { cartModal.classList.remove('active'); }
-
             if (bottomNav) {
-                bottomNav.style.cssText = '';
+                bottomNav.style.cssText = 'display:flex;position:fixed;bottom:0;left:0;right:0;z-index:1000;';
+                bottomNav.classList.add('show');
             }
-
             document.querySelectorAll('.modal-overlay, .modal-backdrop').forEach(el => el.remove());
             document.body.style.overflow = '';
             document.body.classList.remove('modal-open');
 
-            // ✅ Only render cart if no modal is currently open
-            if (!addonModal?.classList.contains('show') && !window.modalState?.addonOpen) {
-                renderCartFromOrder();
-            }
+            // Render cart
+            renderCartFromOrder();
+            updateCartCount();
 
+            // Free item modal — small delay intentional to let cart render first
             if (processFreeItemSelection) {
+                console.log('🎁 Free item promo triggered:', processFreeItemSelection);
                 setTimeout(() => showFreeItemSelectionModal(
                     processFreeItemSelection.promo,
                     processFreeItemSelection.item
@@ -6614,7 +5854,592 @@ export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], edi
     }
 }
 
+//export function addToCart(itemId, selectedAddons = [], selectedRemarks = [], editingOrderItemSNo = null, fromModal = false, isFreeItem = false) {
+//    console.log('addToCart called:', itemId, selectedAddons.length, selectedRemarks.length, 'editing:', editingOrderItemSNo, 'free:', isFreeItem);
+//    console.log('📝 selectedRemarks received:', selectedRemarks);
 
+//    // ✅ FIX 1: Block WS sync immediately — before modal, before debounce
+//    window._blockWSSync = true;
+//    clearTimeout(window._blockWSSyncTimer);
+//    window._blockWSSyncTimer = setTimeout(() => { window._blockWSSync = false; }, 5000);
+
+//    // ✅ FIX 2: Warn if background data (addons/remarks) not ready yet
+//    // This can happen on warm boot if user taps a modifier item too fast
+//    if (!window.__backgroundDataReady) {
+//        console.warn('⚠️ addToCart: Background data (addons/remarks/promos) not yet loaded — modifier items may be incomplete');
+//    }
+
+//    // Prevent duplicate calls — but skip debounce for free items and modal confirmations
+//    if (!isFreeItem && !fromModal) {
+//        const callId = `${itemId}_${selectedAddons.length}_${Date.now()}`;
+//        if (window.lastAddToCartCall === callId) return;
+//        window.lastAddToCartCall = callId;
+//        if (window.isAddingToCart) return;
+//        window.isAddingToCart = true;
+//        setTimeout(() => { window.isAddingToCart = false; }, 500);
+//    }
+
+//    const cache = useCache() || {};
+//    const { order, setOrder, lastSNo, setLastSNo } = useOrder();
+//    const items = cache.items || [];
+
+//    // ==================== FIND + ENHANCE ITEM ====================
+//    let item = items.find(i => i.item_no === itemId || i.id === itemId);
+//    // Fallback to window.menuGridItems
+//    if (!item && window.menuGridItems) {
+//        item = window.menuGridItems.find(i => i.item_no === itemId || i.id === itemId);
+//    }
+//    if (!item) {
+//        return console.warn("Item not found:", itemId);
+//    }
+
+//    // Inline enhancement
+//    item = {
+//        ...item,
+//        comp_code: item.comp_code || '01',
+//        qty: item.qty || 1,
+//        unit_price: parseFloat(item.unit_price || item.price || 0),
+//        price: parseFloat(item.price || item.unit_price || 0),
+//        net_amt: parseFloat(item.net_amt || item.price || 0),
+//        sub_total: parseFloat(item.sub_total || item.price || 0),
+//        sales_dtls: item.sales_dtls || [],
+//        addons: item.addons || [],
+//        remarks: item.remarks || [],
+//        itemmaster_menutype_grpdtls: item.itemmaster_menutype_grpdtls || [],
+//        is_addon_enable: (item.is_addon_enable || 'N').toUpperCase(),
+//        isAvailable: true,
+//        item_desc: item.item_desc || item.item_name || ''
+//    };
+
+//    // ==================== REMARKS & FEATURE DETECTION ====================
+//    let allItemRemarks = cache.itemRemarks || [];
+//    if (typeof allItemRemarks === 'string') {
+//        try { allItemRemarks = JSON.parse(allItemRemarks); } catch { allItemRemarks = []; }
+//    }
+//    if (!Array.isArray(allItemRemarks)) {
+//        allItemRemarks = Object.values(allItemRemarks);
+//    }
+
+//    const orderType = localStorage.getItem("orderType") || "T";
+//    const isTakeawayLocal = (orderType === "T" || orderType === "Q") ? "Y" : "N";
+
+//    // FIX: Define Service Charge Exemption (T and Q)
+//    const isServiceExempt = (orderType === "T" || orderType === "Q");
+
+//    const remarksEntry = allItemRemarks.find(r =>
+//        r.item_no === item.item_no ||
+//        r.item_no === itemId ||
+//        r?.item?.item_no === item.item_no
+//    );
+
+//    const hasAddons = item.is_addon_enable === "Y";
+//    const hasRemarks = Array.isArray(remarksEntry?.remarks_item_details) && remarksEntry.remarks_item_details.length > 0;
+//    const hasModifierGroups = Array.isArray(item.itemmaster_menutype_grpdtls) && item.itemmaster_menutype_grpdtls.length > 0;
+
+//    // ==================== SHOW MODAL IF NEEDED ====================
+//    let showModal = false;
+//    if (!fromModal && !editingOrderItemSNo && !isFreeItem) {
+//        if ((hasAddons && selectedAddons.length === 0) ||
+//            (hasRemarks && selectedRemarks.length === 0) ||
+//            (hasModifierGroups && selectedAddons.length === 0)) {
+//            showModal = true;
+//        }
+//    }
+
+//    if (showModal) {
+//        const addonData = hasAddons ? getAddonsByAddOnName(item.add_on_name) : { cat_dtls: [], item_dtls: [] };
+//        const enrichedCatDtls = (addonData.cat_dtls || []).map(grp => {
+//            if (!grp.category_code) {
+//                const matchedItem = addonData.item_dtls.find(i => i.modifier_name === grp.modifier_name && i.category_code);
+//                if (matchedItem) grp.category_code = matchedItem.category_code;
+//            }
+//            grp.item_dtls = getAvailableAddonItems(addonData, grp);
+//            return grp;
+//        });
+//        showAddOnModal(item, (chosenAddons, chosenRemarks) => {
+//            addToCart(itemId, chosenAddons || [], chosenRemarks || [], editingOrderItemSNo, true);
+//        }, { ...addonData, cat_dtls: enrichedCatDtls }, remarksEntry ? remarksEntry.remarks_item_details : []);
+//        return;
+//    }
+
+//    if (fromModal) {
+//        window.selectedAddons = [];
+//        window.currentBaseItemId = null;
+//        window.tempAddonCache = [];
+//    }
+
+//    let newLastSNo = Math.max(
+//        order?.lastSNo || 0,
+//        order?.sales_dtls?.length > 0
+//            ? Math.max(...order.sales_dtls.map(i => parseInt(i.s_no) || 0))
+//            : 0
+//    );
+
+//    // ==================== HELPER FUNCTIONS ====================
+//    function extractRemarkText(r) {
+//        if (!r) return '';
+//        if (typeof r === 'string') return r.trim();
+//        return (r.remarks_item_name || r.remarks || r.remarkText || '').trim();
+//    }
+
+//    function buildRemarksText(remarks) {
+//        return remarks
+//            .map(extractRemarkText)
+//            .filter(text => text.length > 0)
+//            .join(', ');
+//    }
+
+//    const resultItems = [];
+
+//    // ==================== EDIT MODE ====================
+//    if (editingOrderItemSNo) {
+//        console.log('EDIT MODE - Editing item s_no:', editingOrderItemSNo);
+//        const originalItem = order.sales_dtls.find(i => i.s_no == editingOrderItemSNo);
+//        if (!originalItem) {
+//            console.error('Original item not found for s_no:', editingOrderItemSNo);
+//            return;
+//        }
+
+//        const parentSNo = editingOrderItemSNo;
+//        const remarksByParentCategory = {};
+//        selectedRemarks.forEach(r => {
+//            const parentCat = r.parent_category || '';
+//            if (parentCat) {
+//                if (!remarksByParentCategory[parentCat]) remarksByParentCategory[parentCat] = [];
+//                remarksByParentCategory[parentCat].push(r);
+//            }
+//        });
+
+//        const parentPrice = hasModifierGroups ? 0 : getItemPrice(item);
+//        const parentSubTotal = hasModifierGroups ? 0 : parentPrice * 1;
+//        const hasRealEditChildren = selectedAddons.some(a => {
+//            const itemNo = a.item_no || a.citem_no;
+//            return itemNo && itemNo !== itemId;
+//        });
+
+//        const parentRemarks = !hasRealEditChildren
+//            ? buildRemarksText(selectedRemarks)
+//            : buildRemarksText(selectedRemarks.filter(r => !r.parent_category));
+
+//        console.log('📝 EDIT parentRemarks:', parentRemarks, '| hasRealEditChildren:', hasRealEditChildren);
+
+//        resultItems.push({
+//            ...originalItem,
+//            remarks: parentRemarks,
+//            unit_price: parentPrice,
+//            sub_total: parentSubTotal
+//        });
+
+//        selectedAddons.forEach(addon => {
+//            const itemNo = addon.item_no || addon.citem_no;
+//            const fullAddonItem = items.find(i => i.item_no === itemNo);
+//            if (!fullAddonItem && !addon.item_name && !addon.name) {
+//                console.warn('⚠️ Skipping edit addon - no item data:', itemNo);
+//                return;
+//            }
+//            const addonSource = fullAddonItem || {
+//                item_no: itemNo,
+//                item_name: addon.item_name || addon.name || '',
+//                item_desc: addon.item_desc || addon.item_name || addon.name || '',
+//                category_code: addon.category_code || addon.category || '',
+//                modifier_name: addon.modifier_name || '',
+//                uom: addon.uom || 'POR',
+//                uom_cf: 1,
+//                is_addon_enable: 'N',
+//                add_on_name: '',
+//                menu_type: ''
+//            };
+//            const childSNo = ++newLastSNo;
+//            const addonQty = addon.qty || 1;
+//            const addonPrice = addon.price !== undefined ? parseFloat(addon.price) : getItemPrice(addonSource);
+//            const addonSubTotal = addonQty * addonPrice;
+//            const addonCategory = addon.modifier_name || addon.category || addonSource.category_code;
+//            const addonRemarks = remarksByParentCategory[addonCategory]
+//                ? buildRemarksText(remarksByParentCategory[addonCategory])
+//                : (addon.remarks || "");
+
+//            const addonRecord = createSalesDtlsRecord(
+//                {
+//                    ...addonSource,
+//                    qty: addonQty,
+//                    price: addonPrice,
+//                    remarks: addonRemarks,
+//                    modifier_name: addon.modifier_name || addon.category || addonSource.modifier_name || ""
+//                },
+//                childSNo,
+//                parentSNo,
+//                addonSubTotal
+//            );
+//            addonRecord.order_seq = originalItem.order_seq || 1;
+//            addonRecord.order_seq_type = originalItem.order_seq_type || "New";
+//            addonRecord.order_datetime = originalItem.order_datetime;
+//            addonRecord.take_away_item = isTakeawayLocal;
+//            resultItems.push(addonRecord);
+//        });
+//    }
+//    // ==================== NEW ITEM MODE ====================
+//    else {
+//        const hasProperStructure = selectedAddons.length > 0 &&
+//            selectedAddons[0].s_no &&
+//            selectedAddons[0].parent_sno;
+
+//        if (hasProperStructure) {
+//            const hasRealChildren = selectedAddons.some(a => a.s_no !== a.parent_sno);
+//            console.log('📝 hasProperStructure | hasRealChildren:', hasRealChildren, '| total addons:', selectedAddons.length);
+//            resultItems.push(...selectedAddons.map(addon => {
+//                const isParent = addon.s_no === addon.parent_sno;
+//                const newSNo = ++newLastSNo;
+//                let remarksForItem = "";
+//                if (isParent) {
+//                    if (!hasRealChildren) {
+//                        remarksForItem = buildRemarksText(selectedRemarks);
+//                        console.log('📝 Remarks → parent (no real children):', remarksForItem);
+//                    }
+//                } else {
+//                    const addonCategory = addon.modifier_name || addon.category_code;
+//                    const matchingRemarks = selectedRemarks.filter(r => {
+//                        if (r.parent_category && r.parent_category === addonCategory) return true;
+//                        const remarkGroup = (r.remarks_group || '').toLowerCase();
+//                        const categoryLower = (addonCategory || '').toLowerCase();
+//                        return remarkGroup.includes(categoryLower) || categoryLower.includes(remarkGroup.split(' ')[0]);
+//                    });
+//                    remarksForItem = buildRemarksText(matchingRemarks);
+//                }
+//                return {
+//                    ...addon,
+//                    s_no: newSNo,
+//                    parent_sno: isParent ? newSNo : (addon.parent_sno + (newSNo - addon.s_no)),
+//                    remarks: remarksForItem,
+//                    take_away_item: isTakeawayLocal
+//                };
+//            }));
+//        } else if (selectedAddons.length > 0) {
+//            const parentSNo = ++newLastSNo;
+//            const itemPrice = hasModifierGroups ? 0 : getItemPrice(item);
+//            const allAddonCategories = selectedAddons
+//                .map(a => a.modifier_name || a.category || '')
+//                .filter(Boolean);
+//            const unmatchedRemarks = selectedRemarks.filter(r =>
+//                !r.parent_category || !allAddonCategories.includes(r.parent_category)
+//            );
+//            const parentRemarksText = buildRemarksText(unmatchedRemarks);
+//            console.log('📝 Parent remarks (unmatched):', parentRemarksText);
+
+//            const parentItem = createSalesDtlsRecord(
+//                { ...item, qty: 1, price: itemPrice, remarks: parentRemarksText },
+//                parentSNo, parentSNo, itemPrice
+//            );
+//            parentItem.take_away_item = isTakeawayLocal;
+//            resultItems.push(parentItem);
+
+//            selectedAddons.forEach(addon => {
+//                const itemNo = addon.item_no || addon.citem_no;
+//                const fullAddonItem = items.find(i => i.item_no === itemNo);
+//                if (!fullAddonItem && !addon.item_name && !addon.name) {
+//                    console.warn('⚠️ Skipping addon - no item data at all:', itemNo);
+//                    return;
+//                }
+//                const addonSource = fullAddonItem || {
+//                    item_no: itemNo,
+//                    item_name: addon.item_name || addon.name || '',
+//                    item_desc: addon.item_desc || addon.item_name || addon.name || '',
+//                    category_code: addon.category_code || addon.category || '',
+//                    modifier_name: addon.modifier_name || '',
+//                    uom: addon.uom || 'POR',
+//                    uom_cf: 1,
+//                    is_addon_enable: 'N',
+//                    add_on_name: '',
+//                    menu_type: ''
+//                };
+//                const childSNo = ++newLastSNo;
+//                const addonQty = addon.qty || 1;
+//                const addonPrice = addon.price !== undefined ? parseFloat(addon.price) : getItemPrice(addonSource);
+//                const addonSubTotal = addonQty * addonPrice;
+//                const addonCategory = addon.modifier_name || addon.category || addonSource.category_code;
+//                const matchingRemarks = selectedRemarks.filter(r => {
+//                    if (r.parent_category && r.parent_category === addonCategory) return true;
+//                    const remarkGroup = (r.remarks_group || '').toLowerCase();
+//                    const categoryLower = (addonCategory || '').toLowerCase();
+//                    return remarkGroup.includes(categoryLower) || categoryLower.includes(remarkGroup.split(' ')[0]);
+//                });
+//                const addonRemarks = matchingRemarks.length > 0
+//                    ? buildRemarksText(matchingRemarks)
+//                    : (addon.remarks || "");
+
+//                const addonItem = createSalesDtlsRecord(
+//                    {
+//                        ...addonSource,
+//                        qty: addonQty,
+//                        price: addonPrice,
+//                        remarks: addonRemarks,
+//                        modifier_name: addon.modifier_name || addon.category || addonSource.modifier_name || ""
+//                    },
+//                    childSNo, parentSNo, addonSubTotal
+//                );
+//                addonItem.take_away_item = isTakeawayLocal;
+//                resultItems.push(addonItem);
+//            });
+//        }
+//        // ==================== STANDALONE ITEM (FIXED) ====================
+//        else {
+//            const itemSNo = ++newLastSNo;
+//            const itemPrice = getItemPrice(item);
+//            const remarksText = buildRemarksText(selectedRemarks);
+
+//            console.log('📝 True standalone remarksText:', remarksText);
+//            console.log('💰 Using itemPrice:', itemPrice, 'for item', item.item_name);
+
+//            const baseItemForRecord = {
+//                ...item,
+//                price: itemPrice,
+//                qty: 1,
+//                remarks: remarksText
+//            };
+
+//            const standaloneItem = createSalesDtlsRecord(baseItemForRecord, itemSNo, itemSNo, itemPrice);
+
+//            standaloneItem.take_away_item = isTakeawayLocal;
+//            // Updated logic for Service Charge flag
+//            standaloneItem.is_apply_svc = isServiceExempt ? 0 : 1;
+
+//            resultItems.push(standaloneItem);
+//        }
+//    }
+
+//    // Apply takeaway service flag - PRE-SYNC RESET
+//    const resultItemsWithSvc = resultItems.map(it => ({
+//        ...it,
+//        is_apply_svc: isServiceExempt ? 0 : 1,
+//        svc_amt: "0.000000"
+//    }));
+
+//    let updatedOrderItems;
+
+//    if (editingOrderItemSNo) {
+//        const existingSales = order.sales_dtls.filter(i =>
+//            i.s_no != editingOrderItemSNo && i.parent_sno != editingOrderItemSNo
+//        );
+//        updatedOrderItems = {
+//            orderItems: {
+//                ...order,
+//                sales_dtls: [...existingSales, ...resultItemsWithSvc]
+//            },
+//            processFreeItemSelection: null
+//        };
+//    } else if (hasModifierGroups || hasAddons) {
+//        if (selectedAddons.length > 0 && fromModal) {
+//            updatedOrderItems = {
+//                orderItems: {
+//                    ...order,
+//                    sales_dtls: [
+//                        ...(order?.sales_dtls || []),
+//                        ...resultItemsWithSvc
+//                    ]
+//                },
+//                processFreeItemSelection: null
+//            };
+//        } else {
+//            const beforeAddonItems = structuredClone(resultItemsWithSvc);
+//            const addonResponse = addItemHaveModifierOrAddon(beforeAddonItems, null);
+//            const afterAddonItems = addonResponse?.orderItems?.sales_dtls || [];
+//            const mergedItems = afterAddonItems.length < beforeAddonItems.length
+//                ? [...afterAddonItems, ...beforeAddonItems.filter(b => !afterAddonItems.some(a => a.item_no === b.item_no && a.parent_sno === b.parent_sno))]
+//                : afterAddonItems;
+//            mergedItems.forEach(i => {
+//                const originalItem = beforeAddonItems.find(b => b.s_no === i.s_no);
+//                if (originalItem?.remarks?.trim() && !i.remarks?.trim()) {
+//                    i.remarks = originalItem.remarks;
+//                    console.log('🔄 Restored remarks (addon path):', i.item_no, '->', i.remarks);
+//                }
+//            });
+//            updatedOrderItems = {
+//                orderItems: {
+//                    ...addonResponse.orderItems,
+//                    sales_dtls: mergedItems
+//                },
+//                processFreeItemSelection: addonResponse.processFreeItemSelection
+//            };
+//        }
+//    } else {
+//        const remarksToPreserve = resultItemsWithSvc[0]?.remarks || "";
+//        console.log('📝 Preserving remarks before addAlacarteItem:', remarksToPreserve);
+
+//        try {
+//            // 2. Await the API call (Function must be "async addToCart")
+//            // We use a temporary name 'apiResponse' to avoid "Unexpected reserved word" or re-declaration errors
+//            const remarksToPreserve = resultItemsWithSvc[0]?.remarks || "";
+//            console.log('📝 Preserving remarks:', remarksToPreserve);
+
+//            // 2. DO NOT use await. Call it directly as it is a standard calculation const.
+//            const apiResponse = addAlacarteItem(resultItemsWithSvc[0]);
+
+//            // 3. Safety Check
+//            if (!apiResponse || !apiResponse.orderItems) {
+//                console.error("❌ addAlacarteItem calculation failed");
+//                return;
+//            }
+
+//            // 4. Update our tracking variable
+//            updatedOrderItems = apiResponse;
+
+//            // 5. Data Protection Loop
+//            // Since your addAlacarteItem code uses selling_uom_dtls[0], 
+//            // we ensure the final output has our specific remarks and price safety.
+//            if (updatedOrderItems.orderItems.sales_dtls) {
+//                updatedOrderItems.orderItems.sales_dtls.forEach(s => {
+//                    if (s.item_no === itemId) {
+//                        // Restore remarks if the promotion/calc logic cleared them
+//                        if (remarksToPreserve && !s.remarks) {
+//                            s.remarks = remarksToPreserve;
+//                        }
+
+//                        // Double check price hasn't dropped to 0
+//                        const correctPrice = parseFloat(getItemPrice(item));
+//                        if (!s.unit_price || parseFloat(s.unit_price) === 0) {
+//                            s.unit_price = correctPrice;
+//                            s.sub_total = correctPrice * (s.qty || 1);
+//                        }
+//                    }
+//                });
+//            }
+
+//        } catch (err) {
+//            console.error("❌ Critical error during addAlacarteItem:", err);
+//            showToast?.("Connection error. Please try again.", 'error');
+//            return;
+//        }
+//    }
+
+//    if (updatedOrderItems?.orderItems) {
+//        // 1. Get the sales_dtls safely
+//        let updatedSales = [...(updatedOrderItems.orderItems.sales_dtls || [])].map(it => addTax(it || {}));
+
+//        // 2. Refresh order type for final check
+//        const freshOrderType = localStorage.getItem("orderType") || "T";
+//        const isSvcExemptGlobal = (freshOrderType === "T" || freshOrderType === "Q");
+
+//        // 3. Apply service charge ONLY if NOT exempt
+//        if (!isSvcExemptGlobal) {
+//            const serviceCharges = useCache()?.serviceCharges || [];
+//            const svcConfig = serviceCharges[0] || {};
+//            const svcRate = parseFloat(svcConfig.svc_rate || svcConfig.rate || 10);
+
+//            console.log(`🍽️ Applying Dine-In service charge for ${freshOrderType} at`, svcRate, '%');
+
+//            updatedSales = updatedSales.map(item => {
+//                if (item && (item.is_apply_svc === 1 || item.is_apply_svc === "1")) {
+//                    const subTotal = parseFloat(item.sub_total || item.unit_price * (item.qty || 1) || 0);
+//                    if (subTotal > 0) {
+//                        const svcAmt = (subTotal * svcRate / 100);
+//                        item.svc_amt = svcAmt.toFixed(6);
+//                        console.log(`    → SVC added to ${item.item_name || 'item'}: $${svcAmt.toFixed(2)}`);
+//                    }
+//                }
+//                return item;
+//            });
+//        } else {
+//            // FORCE reset for Q and T
+//            console.log(`🚫 Service charge exempt for type: ${freshOrderType}`);
+//            updatedSales = updatedSales.map(item => ({ ...item, is_apply_svc: 0, svc_amt: "0.000000" }));
+
+//            if (freshOrderType === "T") {
+//                updatedSales = buildTakeawayChargeLines(updatedSales);
+//            }
+//        }
+
+//        const orderWithUpdatedSales = {
+//            ...order,
+//            ...updatedOrderItems.orderItems,
+//            sales_dtls: updatedSales,
+//            lastSNo: newLastSNo
+//        };
+
+//        console.log('🔧 Before calcOrderAmt - sales_dtls length:', orderWithUpdatedSales.sales_dtls.length);
+
+//        let finalOrder = calcOrderAmt(orderWithUpdatedSales, orderWithUpdatedSales.sales_dtls);
+
+//        console.log('🔧 After calcOrderAmt - sub_total:', finalOrder.sub_total, 'net_amt:', finalOrder.net_amt);
+
+//        // Safety net
+//        if (parseFloat(finalOrder.sub_total || 0) === 0 && finalOrder.sales_dtls?.length > 0) {
+//            console.warn('⚠️ calcOrderAmt returned zero totals — forcing recalc');
+//            const recalcSubTotal = finalOrder.sales_dtls.reduce((sum, s) => {
+//                return sum + parseFloat(s.sub_total || s.unit_price * (s.qty || 1) || 0);
+//            }, 0);
+//            const totalTax = finalOrder.sales_dtls.reduce((sum, s) => sum + parseFloat(s.tax_amt || 0), 0);
+//            const totalSvc = finalOrder.sales_dtls.reduce((sum, s) => sum + parseFloat(s.svc_amt || 0), 0);
+
+//            finalOrder = {
+//                ...finalOrder,
+//                sub_total: recalcSubTotal.toFixed(2),
+//                total_tax: totalTax.toFixed(2),
+//                total_svc: totalSvc.toFixed(2),
+//                net_amt: (recalcSubTotal + totalSvc).toFixed(2)
+//            };
+//        }
+
+//        console.log('Final sales_dtls count before setOrder:', finalOrder.sales_dtls?.length || 0);
+//        console.log('💰 Final order totals:', {
+//            sub_total: finalOrder.sub_total,
+//            total_svc: finalOrder.total_svc,
+//            total_tax: finalOrder.total_tax,
+//            net_amt: finalOrder.net_amt
+//        });
+
+//        setOrder(finalOrder);
+//        setLastSNo(newLastSNo);
+//        window._blockWSSync = true;
+//        setTimeout(() => { window._blockWSSync = false; }, 3000);
+//        updateOrderCacheOnServer(finalOrder);
+
+//        const processFreeItemSelection = isFreeItem ? null : updatedOrderItems?.processFreeItemSelection;
+
+//        setTimeout(() => {
+//            renderCartFromOrder();
+//            updateCartCount();
+//            setTimeout(() => {
+//                const bottomNav = document.querySelector('.bottom-nav');
+//                const addonModal = document.getElementById('addonModal');
+//                const cartModal = document.getElementById('cartModal');
+//                if (addonModal) {
+//                    addonModal.classList.remove('active');
+//                    addonModal.style.display = 'none';
+//                }
+//                if (cartModal) {
+//                    cartModal.classList.remove('active');
+//                }
+//                if (bottomNav) {
+//                    bottomNav.style.display = 'flex';
+//                    bottomNav.style.position = 'fixed';
+//                    bottomNav.style.bottom = '0';
+//                    bottomNav.style.left = '0';
+//                    bottomNav.style.right = '0';
+//                    bottomNav.style.zIndex = '1000';
+//                    bottomNav.classList.add('show');
+//                }
+//                document.querySelectorAll('.modal-overlay, .modal-backdrop').forEach(el => el.remove());
+//                document.body.style.overflow = '';
+//                document.body.classList.remove('modal-open');
+//                console.log('🔧 Forced bottom nav visible after modal close');
+
+//                if (processFreeItemSelection) {
+//                    console.log('🎁 Free item promo triggered:', processFreeItemSelection);
+//                    setTimeout(() => {
+//                        showFreeItemSelectionModal(
+//                            processFreeItemSelection.promo,
+//                            processFreeItemSelection.item
+//                        );
+//                    }, 150);
+//                }
+//            }, 100);
+//        }, 10);
+//    }
+
+//    console.log(`Item ${editingOrderItemSNo ? "Updated" : "Added"}:`, itemId);
+//    if (!isFreeItem) {
+//        setTimeout(() => delete window.lastAddToCartCall, 1000);
+//    }
+//}
 
 
 export function showFreeItemSelectionModal(promo, triggerOrderItem) {
@@ -6895,7 +6720,7 @@ async function getOrCreateOrderId() {
 async function updateOrderCacheOnServer(orderData = null) {
     try {
         const deviceId = localStorage.getItem("sok_device_id");
-        const orderType = localStorage.getItem("orderType");
+        const orderType = localStorage.getItem("orderType") || "E";
 
         if (!deviceId) return { success: false };
 
@@ -6906,11 +6731,13 @@ async function updateOrderCacheOnServer(orderData = null) {
         }
 
         // --- 🛡️ GHOST CART PROTECTION START ---
+        // Identify "Real" food items (excluding auto-surcharges)
         const realFoodItems = (sourceOrder?.sales_dtls || []).filter(i =>
             i.item_no !== 'TAKEAWAY_CHARGE' &&
             i.item_type !== 'CHARGE'
         );
 
+        // If NO real food exists, but charges do, clear them before sync
         if (realFoodItems.length === 0 && (sourceOrder?.sales_dtls?.length > 0)) {
             console.log('🧹 Ghost cart detected (only charges left). Purging for sync.');
             sourceOrder.sales_dtls = [];
@@ -6918,26 +6745,14 @@ async function updateOrderCacheOnServer(orderData = null) {
             sourceOrder.net_amt = "0.00";
             sourceOrder.total_tax = "0.00";
             sourceOrder.total_svc = "0.00";
+            // Optional: update local state here if you aren't already
         }
         // --- 🛡️ GHOST CART PROTECTION END ---
 
-        // ✅ No more early-return on empty cart — fall through and sync to
-        // server with sales_dtls: [] so backend can persist + broadcast cache_updated.
-        const isEmpty = !sourceOrder || !sourceOrder.sales_dtls || sourceOrder.sales_dtls.length === 0;
-        if (isEmpty) {
-            console.log("📡 Syncing EMPTY cart to server (so cache_updated can broadcast clear)...");
-            // Ensure sourceOrder is a usable object even if null/undefined
-            sourceOrder = sourceOrder || {};
-            sourceOrder.sales_dtls = [];
-            sourceOrder.sub_total = "0.00";
-            sourceOrder.total_tax = "0.00";
-            sourceOrder.total_svc = "0.00";
-            sourceOrder.net_amt = "0.00";
-            sourceOrder.total_disc = sourceOrder.total_disc ?? "0.00";
-            sourceOrder.round_adj_amt = sourceOrder.round_adj_amt ?? "0.00";
-            sourceOrder.tips_amt = sourceOrder.tips_amt ?? "0";
-            sourceOrder.total_tender_amt = sourceOrder.total_tender_amt ?? "0";
-            sourceOrder.change_amt = sourceOrder.change_amt ?? "0";
+        if (!sourceOrder || !sourceOrder.sales_dtls || sourceOrder.sales_dtls.length === 0) {
+            // Note: We return success: true here so the UI knows an empty state is "synced"
+            console.log("Empty order state synced (Cart cleared)");
+            return { success: true };
         }
 
         const orderId = await getOrCreateOrderId();
@@ -6945,23 +6760,18 @@ async function updateOrderCacheOnServer(orderData = null) {
         const toStr = (val) => (val === null || val === undefined) ? "0.00" : String(val);
         const toInt = (val) => (val === true || val === "Y" || val === 1) ? 1 : 0;
 
-        const INTERNAL_FIELDS = ['_qty_per_serving', '_is_free', '_promo_applied'];
+        // 1. Clean the Sales Details array
+        const cleanedSalesDtls = sourceOrder.sales_dtls.map(dtl => ({
+            ...dtl,
+            is_absorbtax: toInt(dtl.is_absorbtax),
+            IsAbsorbtax: toInt(dtl.is_absorbtax),
+            unit_price: toStr(dtl.unit_price),
+            sub_total: toStr(dtl.sub_total),
+            tax_amt: toStr(dtl.tax_amt),
+            disc_amt: toStr(dtl.disc_amt)
+        }));
 
-        const cleanedSalesDtls = sourceOrder.sales_dtls.map(dtl => {
-            const cleaned = { ...dtl };
-
-            INTERNAL_FIELDS.forEach(field => delete cleaned[field]);
-
-            cleaned.is_absorbtax = toInt(dtl.is_absorbtax);
-            cleaned.IsAbsorbtax = toInt(dtl.is_absorbtax);
-            cleaned.unit_price = toStr(dtl.unit_price);
-            cleaned.sub_total = toStr(dtl.sub_total);
-            cleaned.tax_amt = toStr(dtl.tax_amt);
-            cleaned.disc_amt = toStr(dtl.disc_amt);
-
-            return cleaned;
-        });
-
+        // 2. Construct the strictly-typed Payload
         const payload = {
             OrderType: orderType,
             Status: "N",
@@ -6979,7 +6789,7 @@ async function updateOrderCacheOnServer(orderData = null) {
                 total_tender_amt: toStr(sourceOrder.total_tender_amt),
                 change_amt: toStr(sourceOrder.change_amt),
                 ServiceType: orderType,
-                ServiceTypeInfo: SERVICE_TYPES?.find(item => item?.service_type === orderType)?.service_type_info,
+                ServiceTypeInfo: orderType === "E" ? "DineIn" : (orderType === "Q" ? "QuickService" : "Takeaway"),
                 sales_dtls: cleanedSalesDtls,
                 SalesDtls: cleanedSalesDtls
             }
@@ -6992,7 +6802,7 @@ async function updateOrderCacheOnServer(orderData = null) {
         });
 
         if (response.ok) {
-            console.log(isEmpty ? "✅ Empty cart sync successful" : "✅ Sync Successful");
+            console.log("✅ Sync Successful");
             return { success: true };
         }
 
@@ -7005,7 +6815,6 @@ async function updateOrderCacheOnServer(orderData = null) {
         return { success: false };
     }
 }
-
 // ✅ Helper function to debounce order updates
 let updateTimeout;
 export function debouncedUpdateOrderCache(delayMs = 500) {
@@ -7101,7 +6910,7 @@ function mergeOrderState(wsState) {
 
     setTimeout(() => {
         renderCartFromOrder();
-        //updateCartCount();
+        updateCartCount();
     }, 10);
 
     console.log('✅ Merged WS order into current order. Total items:', mergedSales.length);
@@ -7256,13 +7065,9 @@ export function buildTakeawayChargeLines(salesDtls) {
 
 function createSalesDtlsRecord(itemData, sNo, parentSNo, subTotal) {
     const currentDateTime = getNowInAPIFormat();
-    //const unitPrice = parseFloat(itemData.unit_price) ||
-    //    parseFloat(itemData.price) ||
-    //    parseFloat(getItemPrice(itemData)) || 0;
-    const explicitPrice = itemData.unit_price ?? itemData.price ?? null;
-    const unitPrice = (explicitPrice !== null && !isNaN(parseFloat(explicitPrice)))
-        ? parseFloat(explicitPrice)
-        : parseFloat(getItemPrice(itemData)) || 0;
+    const unitPrice = parseFloat(itemData.unit_price) ||
+        parseFloat(itemData.price) ||
+        parseFloat(getItemPrice(itemData)) || 0;
     const subTotalValue = parseFloat(subTotal) || (unitPrice * (parseFloat(itemData.qty) || 1));
     return {
         s_no: sNo,
@@ -7377,38 +7182,7 @@ export function getRemarksCache() {
 }
 
 // Add once at top of the file, outside the function
-// ─── Persistent image URL cache ──────────────────────────────────────────────
-const IMAGE_URL_CACHE_KEY = 'sok_image_url_cache';
-const IMAGE_URL_CACHE_TTL = 30 * 60 * 1000; // match menu cache TTL
-
-const _imageUrlCache = (() => {
-    try {
-        const raw = sessionStorage.getItem(IMAGE_URL_CACHE_KEY);
-        if (raw) {
-            const { entries, ts } = JSON.parse(raw);
-            if (Date.now() - ts < IMAGE_URL_CACHE_TTL && Array.isArray(entries)) {
-                console.log(`⚡ Image URL cache restored: ${entries.length} entries`);
-                return new Map(entries);
-            }
-        }
-    } catch (e) { /* corrupt cache — start fresh */ }
-    return new Map();
-})();
-
-// Debounced write-back so we don't hammer sessionStorage on every lookup
-let _imgCachePersistTimer = null;
-function persistImageUrlCache() {
-    clearTimeout(_imgCachePersistTimer);
-    _imgCachePersistTimer = setTimeout(() => {
-        try {
-            sessionStorage.setItem(IMAGE_URL_CACHE_KEY, JSON.stringify({
-                entries: Array.from(_imageUrlCache.entries()),
-                ts: Date.now()
-            }));
-        } catch (e) { /* quota — non-fatal */ }
-    }, 500);
-}
-
+const _imageUrlCache = new Map();
 let _menuItemsIndex = null; // pre-built lookup index
 let _fullItemsIndex = null;
 
@@ -7493,26 +7267,7 @@ export function getItemImageUrl(item) {
 
     // ✅ Cache result for all future calls
     _imageUrlCache.set(item.item_no, imageUrl);
-    persistImageUrlCache();
     return imageUrl;
-}
-
-
-const IMAGE_DOMAIN_KEY = 'sok_image_domain';
-
-function getImageDomainConfig() {
-    if (window._imgDomainCfg) return window._imgDomainCfg;
-    try {
-        const raw = sessionStorage.getItem(IMAGE_DOMAIN_KEY);
-        if (raw) return (window._imgDomainCfg = JSON.parse(raw));
-    } catch { }
-    const cfg = {
-        base: RESTAURANT_CONFIG.baseImageUrl || '',
-        proxyPrefix: '/api/GetImageProxy?imageUrl=',
-        logo: RESTAURANT_CONFIG.logo || '/img/Logo.png'
-    };
-    sessionStorage.setItem(IMAGE_DOMAIN_KEY, JSON.stringify(cfg));
-    return (window._imgDomainCfg = cfg);
 }
 
 // Call this when menu data reloads to invalidate caches
@@ -7520,7 +7275,6 @@ export function clearImageUrlCache() {
     _imageUrlCache.clear();
     _menuItemsIndex = null;
     _fullItemsIndex = null;
-    sessionStorage.removeItem(IMAGE_URL_CACHE_KEY);
 }
 /**
 * Helper function to determine temperature from item name
@@ -9069,6 +8823,7 @@ GetHomeAPI.editItem = function (sno, item_no) {
             addon.price = getItemPrice(fullAddonItem);
             addon.unit_price = addon.price;
         } else {
+            // addon-only items not in main cache — preserve existing price
             addon.price = addon.price ?? addon.unit_price ?? 0;
             addon.unit_price = addon.price;
         }
@@ -9177,7 +8932,7 @@ GetHomeAPI.editItem = function (sno, item_no) {
 
     const filteredAddonData = { ...addonData, cat_dtls: enrichedCatDtls };
 
-    // ── Close cart modal ──────────────────────────────────────────────────────
+    // Close cart modal
     const cartModal = document.getElementById('cartModal');
     const cartOverlay = document.getElementById('cartModalOverlay');
     const bottomNav = document.querySelector('.bottom-nav');
@@ -9194,32 +8949,17 @@ GetHomeAPI.editItem = function (sno, item_no) {
         bottomNav.classList.add('hide-on-modal');
     }
 
-    // ✅ Set editing sno BEFORE opening modal so closeAddonModalAndRestoreCart
-    // knows to restore the cart modal instead of taking the new item branch
-    window.currentEditingSno = sno;
-    window.modalState = window.modalState || {};
-    window.modalState.cartOpen = false;
+    const useWizardModal = ADDON_MODAL_CONFIG.style === 'wizard' && hasModifierGroups;
 
-    console.log("✅ Set currentEditingSno:", sno);
-
-    // ── Edit callback ─────────────────────────────────────────────────────────
     const editCallback = (chosenAddons, chosenRemarks) => {
-        // ✅ Set BEFORE addToCart so it survives async operations
-        window.currentEditingSno = sno;
-    
         addToCart(
             fullItemData.item_no,
             chosenAddons || [],
             chosenRemarks || [],
-            sno,
-            true
+            sno,   // editingOrderItemSNo
+            true   // fromModal=true
         );
-    
-        // ✅ Re-set AFTER too as double guarantee
-        window.currentEditingSno = sno;
     };
-
-    const useWizardModal = ADDON_MODAL_CONFIG.style === 'wizard' && hasModifierGroups;
 
     if (useWizardModal) {
         console.log("🧙 Opening WIZARD modal for editing");
@@ -9249,11 +8989,8 @@ GetHomeAPI.editItem = function (sno, item_no) {
         }, 100);
     }
 };
-function closeAddonModal() {
-    window.modalState = window.modalState || {};
-    window.modalState.addonOpen = false;
-    window.modalState.addonModalDirect = false;
 
+function closeAddonModal() {
     console.log('📊 Modal state:', {
         addonOpen: !!document.getElementById('addonModal')?.classList.contains('active'),
         cartOpen: !!document.getElementById('cartModal')?.classList.contains('active')
@@ -9264,7 +9001,7 @@ function closeAddonModal() {
     const bottomNav = document.querySelector('.bottom-nav');
 
     if (addonModal) {
-        addonModal.classList.remove('active', 'show');
+        addonModal.classList.remove('active');
         addonModal.style.display = 'none';
     }
     if (addonOverlay) {
@@ -9272,37 +9009,16 @@ function closeAddonModal() {
         addonOverlay.style.display = 'none';
     }
 
-    if (bottomNav) {
-        bottomNav.classList.remove('modal-open', 'hide-on-modal');
-    }
-    document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
-
+    // ✅ Check if we're in edit mode
     if (window.currentEditingSno) {
-        // ✅ Edit mode — restore cart modal
-        console.log('🔄 Edit mode: restoring cart modal, sno:', window.currentEditingSno);
-        window.currentEditingSno = null;
-        window.modalState.cartOpen = true;
-
-        const cartModal = document.getElementById('cartModal');
-        const cartOverlay = document.getElementById('cartModalOverlay');
-
-        if (cartModal) {
-            cartModal.classList.add('active');
-            cartModal.style.display = 'block';
-        }
-        if (cartOverlay) {
-            cartOverlay.classList.add('active');
-            cartOverlay.style.display = 'block';
-        }
-        document.body.style.overflow = 'hidden';
-
-        if (HIDE_BOTTOM_NAV_ON_MODAL && bottomNav) {
-            bottomNav.classList.add('hide-on-modal');
-        }
-        console.log('✅ Cart modal restored after edit');
+        console.log('🔄 Edit mode: Not showing bottom nav (cart will be restored)');
+        // Don't show bottom nav - cart modal restoration will handle it
     } else {
         console.log('✅ New item mode: closing addon');
+        // ✅ Show bottom nav when closing addon in new item mode
+        if (bottomNav) {
+            bottomNav.classList.remove('hide-on-modal');
+        }
         showBottomNav();
     }
 
@@ -9310,16 +9026,13 @@ function closeAddonModal() {
 }
 
 function closeAddonModalAndRestoreCart() {
-    window.modalState = window.modalState || {};
-    window.modalState.addonOpen = false;
-    window.modalState.addonModalDirect = false;
-
     const addonModal = document.getElementById('addonModal');
     const addonOverlay = document.getElementById('addonModalOverlay');
     const bottomNav = document.querySelector('.bottom-nav');
 
+    // Close addon modal
     if (addonModal) {
-        addonModal.classList.remove('active', 'show');
+        addonModal.classList.remove('active');
         addonModal.style.display = 'none';
     }
     if (addonOverlay) {
@@ -9327,19 +9040,8 @@ function closeAddonModalAndRestoreCart() {
         addonOverlay.style.display = 'none';
     }
 
-    // ✅ Always clean modal-open off the nav first
-    if (bottomNav) {
-        bottomNav.classList.remove('modal-open');
-    }
-    document.body.classList.remove('modal-open');
-
     if (window.currentEditingSno) {
-        console.log('🔄 Restoring cart modal after edit, sno:', window.currentEditingSno);
-
-        // ✅ Clear AFTER reading, so the branch runs correctly
-        window.currentEditingSno = null;
-        window.modalState.cartOpen = true;
-
+        console.log('🔄 Restoring cart modal after edit');
         const cartModal = document.getElementById('cartModal');
         const cartOverlay = document.getElementById('cartModalOverlay');
 
@@ -9352,30 +9054,45 @@ function closeAddonModalAndRestoreCart() {
             cartOverlay.style.display = 'block';
         }
 
-        document.body.style.overflow = 'hidden';
-
+        // ✅ Keep bottom nav hidden if toggle is on (cart modal is open)
         if (HIDE_BOTTOM_NAV_ON_MODAL && bottomNav) {
             bottomNav.classList.add('hide-on-modal');
-            bottomNav.classList.remove('modal-open');
             console.log('🔒 Bottom nav stays hidden (cart modal open)');
         } else if (bottomNav) {
-            bottomNav.classList.remove('hide-on-modal', 'modal-open');
+            bottomNav.classList.remove('hide-on-modal');
             showBottomNav();
         }
 
+        document.body.style.overflow = 'hidden';
+        window.currentEditingSno = null;
     } else {
         console.log('✅ Closing addon modal (new item flow)');
 
-        window.currentEditingSno = null;
-
+        // ✅ Show bottom nav for new item flow
         if (bottomNav) {
-            bottomNav.classList.remove('hide-on-modal', 'modal-open');
+            bottomNav.classList.remove('hide-on-modal');
         }
-
-        document.querySelectorAll('.modal-overlay, .modal-backdrop').forEach(el => el.remove());
-        document.body.style.overflow = '';
-
         showBottomNav();
+
+        document.querySelectorAll('.modal-overlay, .modal-backdrop').forEach(el => {
+            el.remove();
+        });
+
+        document.body.style.overflow = '';
+        document.body.classList.remove('modal-open');
+    }
+}
+function showBottomNav() {
+    const bottomNav = document.querySelector('.bottom-nav');
+    if (bottomNav) {
+        bottomNav.style.display = 'flex';
+        bottomNav.style.position = 'fixed';
+        bottomNav.style.bottom = '0';
+        bottomNav.style.left = '0';
+        bottomNav.style.right = '0';
+        bottomNav.style.zIndex = '1050';
+        bottomNav.classList.add('show');
+        console.log('✅ Bottom nav shown with full positioning');
     }
 }
 
@@ -9732,8 +9449,6 @@ function prefillAddonModal(selectedAddons, selectedRemarks, fullItemData, editin
     console.log("✅ Modal prefilled successfully");
     console.log("🎯 Final selectedAddons:", window.selectedAddons);
 }
-
-
 export function preloadCartImages(items, MenuItems) {
     const imageUrls = items.map(item => {
         const menuItem = MenuItems.find(mi => mi.item_no === item.item_no);

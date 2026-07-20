@@ -62,7 +62,7 @@ import { renderCartFromOrder, showErrorModal, closeErrorModal, showSuccessModal,
 
 
 renderCartFromOrder();
-updateCartCount();
+//updateCartCount();
 
 
 // ============================================
@@ -359,14 +359,22 @@ export function showWizardModal(
     modal.classList.add('show');
     modal.style.display = '';
     const bottomNav = document.querySelector('.bottom-nav');
-    bottomNav.classList.remove('hidden');
-    bottomNav.classList.add('show');
+    if (bottomNav) {
+        bottomNav.classList.add('hide');
+        bottomNav.classList.remove('show');
+    }
 
     window.currentBaseItemId = baseItem.item_no;
     window.editingOrderItemSNo = editingOrderItemSNo;
 
-    const itemmasterGroups = Array.isArray(baseItem.itemmaster_menutype_grpdtls) ? baseItem.itemmaster_menutype_grpdtls : [];
-    const itemmasterItems = Array.isArray(baseItem.itemmaster_menutypedtls) ? baseItem.itemmaster_menutypedtls : [];
+    // 🛠️ FIX: Safe checks for combo setups if standard parameters are missing from API payload
+    const itemmasterGroups = Array.isArray(baseItem.itemmaster_menutype_grpdtls) && baseItem.itemmaster_menutype_grpdtls.length > 0
+        ? baseItem.itemmaster_menutype_grpdtls
+        : (Array.isArray(baseItem.combo_groups) ? baseItem.combo_groups : (Array.isArray(baseItem.combo_details) ? baseItem.combo_details : []));
+
+    const itemmasterItems = Array.isArray(baseItem.itemmaster_menutypedtls) && baseItem.itemmaster_menutypedtls.length > 0
+        ? baseItem.itemmaster_menutypedtls
+        : (Array.isArray(baseItem.combo_items) ? baseItem.combo_items : (Array.isArray(baseItem.child_items) ? baseItem.child_items : []));
 
     window.itemmasterGroups = itemmasterGroups;
     window.itemmasterItems = itemmasterItems;
@@ -478,6 +486,7 @@ export function showWizardModal(
             }
             if (window.modalState) window.modalState.addonOpen = false;
             modal.classList.remove('show');
+            window._blockWSSync = false;
             modal.classList.add('close');
             updateBottomNavVisibility();
         };
@@ -1143,9 +1152,19 @@ function findItemInSessionStorage(itemNo, itemName) {
         for (const key of ['MenuItems', 'FullItems']) {
             const raw = sessionStorage.getItem(key);
             if (!raw) continue;
-            const parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed)) continue;
-            allItems = allItems.concat(parsed[0]?.items ? parsed.flatMap(s => s.items || []) : parsed);
+            try {
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) continue;
+                parsed.forEach(section => {
+                    if (Array.isArray(section.items)) allItems = allItems.concat(section.items);
+                    // ✅ nested categories
+                    if (Array.isArray(section.category)) {
+                        section.category.forEach(cat => {
+                            if (Array.isArray(cat.items)) allItems = allItems.concat(cat.items);
+                        });
+                    }
+                });
+            } catch (e) { /* ignore */ }
         }
         if (!allItems.length) return null;
         if (itemNo) {
@@ -1231,10 +1250,14 @@ function renderWizardUI(container, baseItem, steps, onConfirm, editingOrderItemS
                         window._wizardBlockOutsideClick = null;
                     }
                     if (window.modalState) window.modalState.addonOpen = false;
+                    window._blockWSSync = false;
                     modal.classList.remove('show');
                     modal.classList.add('close');
+                    const bottomNav = document.querySelector('.bottom-nav');
+                    if (bottomNav) bottomNav.classList.remove('hide');
                     updateBottomNavVisibility();
-                " style="position:absolute;top:12px;right:12px;z-index:60;background:#f3f4f6;border:none;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#374151;flex-shrink:0;">
+                    setTimeout(() => window.sokWebSocket?.drainPendingCacheUpdate(), 50);
+                    " style="position:absolute;top:12px;right:12px;z-index:60;background:#f3f4f6;border:none;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#374151;flex-shrink:0;">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                         <line x1="18" y1="6" x2="6" y2="18"></line>
                         <line x1="6" y1="6" x2="18" y2="18"></line>

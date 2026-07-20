@@ -1166,11 +1166,20 @@ namespace PROD_LIHO_SOK.Controllers
             try
             {
                 var deviceId = message.TryGetProperty("deviceId", out var devId) ? devId.GetString() : connectionId;
-                var orderId = message.TryGetProperty("orderId", out var oid) ? oid.GetString() : null;
+
+                var rawOrderId = message.TryGetProperty("orderId", out var oid) ? oid.GetString() : null;
+                var rawSalesNo = message.TryGetProperty("salesNo", out var sn) ? sn.GetString() : null;
+
+                // ✅ orderId must be ORD-..., salesNo must be SAL-... — otherwise treat as not available
+                var orderId = (!string.IsNullOrEmpty(rawOrderId) && rawOrderId.StartsWith("ORD-", StringComparison.OrdinalIgnoreCase))
+                    ? rawOrderId : null;
+
+                var salesNo = (!string.IsNullOrEmpty(rawSalesNo) && rawSalesNo.StartsWith("SAL-", StringComparison.OrdinalIgnoreCase))
+                    ? rawSalesNo : null;
+
                 var transactionId = message.TryGetProperty("transactionId", out var tid) ? tid.GetString() : null;
                 var amount = message.TryGetProperty("amount", out var amt) ? amt.GetDecimal() : 0m;
 
-                object orderData = null;
                 Dictionary<string, object> orderDataDict = null;
 
                 // 1️⃣ Try from message
@@ -1238,6 +1247,34 @@ namespace PROD_LIHO_SOK.Controllers
                     }
                 }
 
+                if (orderDataDict != null)
+                {
+                    // ✅ server_order_id should always reflect ORD-...
+                    if (!string.IsNullOrEmpty(orderId))
+                    {
+                        orderDataDict["server_order_id"] = orderId;
+                    }
+
+                    // ✅ sales_no: only overwrite if we actually have a real SAL-... value.
+                    // At payment_success time the gateway sales number usually isn't assigned yet
+                    // (it arrives later via payment_synced) — do NOT fall back to orderId here.
+                    var currentSalesNoRaw = orderDataDict.TryGetValue("sales_no", out var existing)
+                        ? existing?.ToString() : null;
+                    var currentSalesNo = (!string.IsNullOrEmpty(currentSalesNoRaw) && currentSalesNoRaw.StartsWith("SAL-", StringComparison.OrdinalIgnoreCase))
+                        ? currentSalesNoRaw : null;
+
+                    if (!string.IsNullOrEmpty(salesNo) && currentSalesNo != salesNo)
+                    {
+                        _logger.LogInformation("✅ [payment_success] Setting sales_no = {SalesNo}", salesNo);
+                        orderDataDict["sales_no"] = salesNo;
+                    }
+                    else if (string.IsNullOrEmpty(currentSalesNo))
+                    {
+                        // No valid SAL-... number known yet — keep it empty, never let it be ORD-...
+                        orderDataDict["sales_no"] = "";
+                    }
+                }
+
                 // ✅ SAVE to pending store so order_complete can retrieve it
                 // Key by deviceId — order_complete arrives very shortly after
                 if (orderDataDict != null && !string.IsNullOrEmpty(deviceId))
@@ -1246,17 +1283,18 @@ namespace PROD_LIHO_SOK.Controllers
                     _logger.LogInformation("💾 [payment_success] Saved orderData to pending store for deviceId: {DeviceId}", deviceId);
                 }
 
-                orderData = orderDataDict;
+                object orderData = orderDataDict;
 
                 _logger.LogInformation(
-                    "✅ Payment success: DeviceId={DeviceId}, OrderId={OrderId}, Amount={Amount}, TxnId={TxnId}, HasOrderData={HasOrderData}",
-                    deviceId, orderId, amount, transactionId, orderData != null);
+                    "✅ Payment success: DeviceId={DeviceId}, OrderId={OrderId}, SalesNo={SalesNo}, Amount={Amount}, TxnId={TxnId}, HasOrderData={HasOrderData}",
+                    deviceId, orderId, salesNo, amount, transactionId, orderData != null);
 
                 var notification = new
                 {
                     action = "payment_success",
                     deviceId,
-                    orderId,
+                    orderId,    // always ORD-... or null
+                    salesNo,    // always SAL-... or null
                     transactionId,
                     amount,
                     orderData,

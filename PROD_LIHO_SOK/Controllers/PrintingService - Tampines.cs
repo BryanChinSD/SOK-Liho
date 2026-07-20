@@ -6,7 +6,7 @@
 //using Microsoft.Extensions.Caching.Memory;
 //using Microsoft.Extensions.Configuration;
 //using Microsoft.Extensions.Logging;
-//using PdfiumViewer;                     // replaces PDFtoImage + SkiaSharp
+//using PdfiumViewer;
 //using RawPrint;
 //using RawPrint.NetStd;
 //using System;
@@ -19,25 +19,7 @@
 //using System.Text;
 //using System.Text.Json;
 //using System.Threading.Tasks;
-//using SixLabors.ImageSharp.Processing;
 
-//// REMOVED: using SkiaSharp;
-//// REMOVED: using PDFtoImage;
-//// REMOVED: using ESCPOS.NET;
-//// REMOVED: using ESCPOS.NET.Emitters;
-
-//// ═══════════════════════════════════════════════════════════════════════════════
-//// NuGet packages required:
-////   PdfiumViewer          (wraps pdfium.dll — handles CJK fonts natively)
-////   PdfiumViewer.Native.x86_x64.v8-xfa  (or the plain pdfium native)
-////   RawPrint / RawPrint.NetStd
-////
-//// REMOVED packages (can be uninstalled):
-////   PDFtoImage
-////   SkiaSharp
-////   SkiaSharp.NativeAssets.Linux / Win
-////   ESCPOS.NET  (only if you added it previously)
-//// ═══════════════════════════════════════════════════════════════════════════════
 
 //namespace PROD_LIHO_SOK.Services
 //{
@@ -63,7 +45,7 @@
 //        private readonly string _getPOSURL;
 //        private readonly string _compCode;
 
-//        // ── No more CJK font path cache needed — pdfium handles fonts itself ──
+//        private const string PrintJobDir = @"C:\PROD_LIHO_SOK\NETs\PrintJobs";
 
 //        public PrinterService(
 //            IHttpClientFactory httpClientFactory,
@@ -96,24 +78,22 @@
 //        // ── Print ──────────────────────────────────────────────────────────────
 
 //        public async Task<bool> PrintAsync(
-//    string printerName, byte[] fileData, string fileName, bool rotate)
+//            string printerName, byte[] fileData, string fileName, bool rotate)
 //        {
 //            try
 //            {
-//                // ✅ Always save receipt first before printing
 //                await SavePrintJobAsync(fileData, fileName);
 
 //                bool isPdf = fileData.Length > 4
-//                    && fileData[0] == 0x25   // %
-//                    && fileData[1] == 0x50   // P
-//                    && fileData[2] == 0x44   // D
-//                    && fileData[3] == 0x46;  // F
+//                    && fileData[0] == 0x25
+//                    && fileData[1] == 0x50
+//                    && fileData[2] == 0x44
+//                    && fileData[3] == 0x46;
 
 //                if (isPdf)
 //                {
 //                    _logger.LogInformation(
-//                        "PrintAsync — PDF detected, printing via PdfiumViewer → {PrinterName}",
-//                        printerName);
+//                        "PrintAsync — PDF detected → {PrinterName}", printerName);
 //                    return await PrintPdfAsync(printerName, fileData, fileName, rotate);
 //                }
 //                else
@@ -133,6 +113,23 @@
 //            }
 //        }
 
+//        // ── PrintPdfAsync ──────────────────────────────────────────────────────
+//        //
+//        // KEY FIX for "prints too small":
+//        //
+//        // The root cause is that PrintDocument's Graphics context runs at the
+//        // printer's reported DPI (e.g. 203), but DrawImage dimensions are in
+//        // 1/100-inch units. If you render at 203dpi and then pass pixel counts
+//        // as DrawImage width/height, Windows treats those as 1/100-inch values —
+//        // making a 576px wide image print at 5.76 inches instead of 80mm (3.15in).
+//        //
+//        // Fix: always convert px → inches → 1/100-inch explicitly:
+//        //   printWidth  = (renderedWidthPx  / renderDpi) * 100
+//        //   printHeight = (renderedHeightPx / renderDpi) * 100
+//        //
+//        // Also: set paper size to match the PDF page exactly so the driver
+//        // does not apply any additional fit-to-page scaling.
+
 //        private Task<bool> PrintPdfAsync(
 //    string printerName, byte[] pdfData, string fileName, bool rotate)
 //        {
@@ -141,9 +138,10 @@
 //                _logger.LogInformation(
 //                    "PrintPdfAsync → {PrinterName} | {FileName}", printerName, fileName);
 
-//                const float renderDpi = 300f;
+//                const float renderDpi = 203f;
 
 //                var bitmaps = new List<Image>();
+//                var pageSizes = new List<SizeF>();
 
 //                using (var ms = new MemoryStream(pdfData))
 //                using (var pdfDoc = PdfDocument.Load(ms))
@@ -153,27 +151,38 @@
 //                    for (int i = 0; i < pdfDoc.PageCount; i++)
 //                    {
 //                        var pageSize = pdfDoc.PageSizes[i];
+//                        pageSizes.Add(pageSize);
 
 //                        int widthPx = (int)(pageSize.Width / 72f * renderDpi);
 //                        int heightPx = (int)(pageSize.Height / 72f * renderDpi);
 
+//                        _logger.LogInformation(
+//                            "Page {Page}: {PtW}×{PtH}pt → {W}×{H}px @ {Dpi}dpi  ({Wmm}×{Hmm}mm)",
+//                            i,
+//                            pageSize.Width, pageSize.Height,
+//                            widthPx, heightPx,
+//                            renderDpi,
+//                            pageSize.Width / 72f * 25.4f,
+//                            pageSize.Height / 72f * 25.4f);
+
 //                        var rotation = rotate ? PdfRotation.Rotate180 : PdfRotation.Rotate0;
 
-//                        // ✅ Render via PdfiumViewer
-//                        var rendered = pdfDoc.Render(
-//                            i, widthPx, heightPx,
+//                        var img = pdfDoc.Render(
+//                            i,
+//                            widthPx, heightPx,
 //                            renderDpi, renderDpi,
 //                            rotation,
 //                            PdfRenderFlags.ForPrinting);
 
-//                        // ✅ Sharpen via ImageSharp then convert back to System.Drawing.Image
-//                        var sharpened = SharpenBitmap(rendered, renderDpi);
-//                        bitmaps.Add(sharpened);
-//                        rendered.Dispose();
+//                        if (img is Bitmap bmp)
+//                            bmp.SetResolution(renderDpi, renderDpi);
+
+//                        bitmaps.Add(img);
 //                    }
 //                }
 
 //                int currentPage = 0;
+//                int currentOffsetPx = 0;
 
 //                using var pd = new PrintDocument();
 //                pd.PrinterSettings.PrinterName = printerName;
@@ -186,6 +195,17 @@
 //                    return Task.FromResult(false);
 //                }
 
+//                // ✅ Unchanged — use driver's own paper size definition
+//                pd.QueryPageSettings += (sender, e) =>
+//                {
+//                    foreach (PaperSize size in pd.PrinterSettings.PaperSizes)
+//                    {
+//                        _logger.LogInformation("Driver paper: {Name} {W}×{H}", size.PaperName, size.Width, size.Height);
+//                        if (size.PaperName.Contains("80")) { e.PageSettings.PaperSize = size; break; }
+//                    }
+//                    e.PageSettings.Margins = new Margins(0, 0, 0, 0);
+//                };
+
 //                pd.PrintPage += (sender, e) =>
 //                {
 //                    try
@@ -195,26 +215,40 @@
 //                        if (img is Bitmap bmp)
 //                            bmp.SetResolution(renderDpi, renderDpi);
 
-//                        float printWidth = img.Width / renderDpi * 100f;
-//                        float printHeight = img.Height / renderDpi * 100f;
+//                        // scale-to-fit: when driver paper == PDF width, scale ≈ 1.0 → actual size
+//                        float imgWidth100 = img.Width / renderDpi * 100f;
+//                        float destWidth = e.PageBounds.Width;
+//                        float scale = destWidth / imgWidth100;
+
+//                        int pageHeightPx = (int)(e.PageBounds.Height / 100f * renderDpi / scale);
+//                        int sliceHeightPx = Math.Min(pageHeightPx, img.Height - currentOffsetPx);
+
+//                        var srcRect = new Rectangle(0, currentOffsetPx, img.Width, sliceHeightPx);
+//                        var destRect = new RectangleF(
+//                            0f, 0f,
+//                            destWidth,
+//                            sliceHeightPx / renderDpi * 100f * scale);
+
+//                        e.Graphics.PageUnit = GraphicsUnit.Display;
+//                        e.Graphics.DrawImage(img, destRect, srcRect, GraphicsUnit.Pixel);
 
 //                        _logger.LogInformation(
-//                            "Printing page {Page} → {W}px × {H}px @ {Dpi}dpi",
-//                            currentPage, img.Width, img.Height, renderDpi);
+//                            "PrintPage bmp {Page} offset {Off}px slice {Slice}px of {Total}px | scale {Scale}",
+//                            currentPage, currentOffsetPx, sliceHeightPx, img.Height, scale);
 
-//                        e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-//                        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
-//                        e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-//                        e.Graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+//                        currentOffsetPx += sliceHeightPx;
 
-//                        e.Graphics.DrawImage(img, 0f, 0f, printWidth, printHeight);
+//                        if (currentOffsetPx >= img.Height)
+//                        {
+//                            currentPage++;
+//                            currentOffsetPx = 0;
+//                        }
 
-//                        currentPage++;
 //                        e.HasMorePages = currentPage < bitmaps.Count;
 //                    }
 //                    catch (Exception ex)
 //                    {
-//                        _logger.LogError(ex, "❌ PrintPage error");
+//                        _logger.LogError(ex, "❌ PrintPage error on page {Page}", currentPage);
 //                        e.HasMorePages = false;
 //                    }
 //                };
@@ -223,13 +257,12 @@
 //                {
 //                    foreach (var img in bitmaps)
 //                        img.Dispose();
-
 //                    _logger.LogInformation("🧹 Bitmaps disposed");
 //                };
 
 //                pd.Print();
 
-//                _logger.LogInformation("✅ Print success → {FileName}", fileName);
+//                _logger.LogInformation("✅ PrintPdfAsync success → {FileName}", fileName);
 //                return Task.FromResult(true);
 //            }
 //            catch (Exception ex)
@@ -241,193 +274,19 @@
 //            }
 //        }
 
-//        // ✅ Uses SixLabors.ImageSharp to sharpen the rendered bitmap
-//        private System.Drawing.Image SharpenBitmap(System.Drawing.Image source, float dpi)
-//        {
-//            try
-//            {
-//                // Convert System.Drawing.Image → byte[] PNG → ImageSharp
-//                byte[] pngBytes;
-//                using (var ms = new MemoryStream())
-//                {
-//                    source.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-//                    pngBytes = ms.ToArray();
-//                }
-
-//                byte[] sharpenedBytes;
-//                using (var ms = new MemoryStream(pngBytes))
-//                using (var imgSharp = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(ms))
-//                {
-//                    // ✅ Sharpen — adjust sigma for more/less sharpening (0.5–2.0)
-//                    imgSharp.Mutate(ctx => ctx
-//                        .GaussianSharpen(1.0f)   // sharpens edges/text
-//                    );
-
-//                    using var outMs = new MemoryStream();
-//                    imgSharp.Save(outMs, new SixLabors.ImageSharp.Formats.Png.PngEncoder());
-//                    sharpenedBytes = outMs.ToArray();
-//                }
-
-//                // Convert back to System.Drawing.Image
-//                var result = System.Drawing.Image.FromStream(new MemoryStream(sharpenedBytes));
-
-//                // ✅ Restore DPI metadata
-//                if (result is Bitmap bmp)
-//                    bmp.SetResolution(dpi, dpi);
-
-//                return result;
-//            }
-//            catch (Exception ex)
-//            {
-//                _logger.LogWarning(ex, "⚠️ SharpenBitmap failed — using original");
-//                return source; // fallback to unsharpened
-//            }
-//        }
-
-//        // ── PrintPdfAsync — PDF → PdfiumViewer.Render → Bitmap → PrintDocument ──
-//        //
-//        // We deliberately avoid PdfDocument.CreatePrintDocument() because it
-//        // internally references System.Windows.Forms v2.0.0.0 (old .NET Framework)
-//        // which does not exist in .NET 6/7/8 projects and throws FileNotFoundException.
-//        //
-//        // Instead we:
-//        //   1. Render each page to a System.Drawing.Image via PdfiumViewer (CJK fonts work)
-//        //   2. Print the images ourselves via PrintDocument (no WinForms version conflict)
-//        //
-//        //private Task<bool> PrintPdfAsync(
-//        //    string printerName, byte[] pdfData, string fileName, bool rotate)
-//        //{
-//        //    try
-//        //    {
-//        //        _logger.LogInformation(
-//        //            "PrintPdfAsync → {PrinterName} | {FileName}",
-//        //            printerName, fileName);
-
-//        //        const float renderDpi = 203f; // ✅ Match thermal printer DPI
-
-//        //        var bitmaps = new List<Image>();
-
-//        //        using (var ms = new MemoryStream(pdfData))
-//        //        using (var pdfDoc = PdfDocument.Load(ms))
-//        //        {
-//        //            _logger.LogInformation(
-//        //                "PDF loaded: {Pages} page(s)",
-//        //                pdfDoc.PageCount);
-
-//        //            for (int i = 0; i < pdfDoc.PageCount; i++)
-//        //            {
-//        //                var pageSize = pdfDoc.PageSizes[i];
-
-//        //                int widthPx = (int)(pageSize.Width / 72f * renderDpi);
-//        //                int heightPx = (int)(pageSize.Height / 72f * renderDpi);
-
-//        //                var rotation = rotate ? PdfRotation.Rotate180 : PdfRotation.Rotate0;
-
-//        //                var img = pdfDoc.Render(
-//        //                    i,
-//        //                    widthPx,
-//        //                    heightPx,
-//        //                    renderDpi,
-//        //                    renderDpi,
-//        //                    rotation,
-//        //                    PdfRenderFlags.ForPrinting);
-
-//        //                bitmaps.Add(img);
-//        //            }
-//        //        }
-
-//        //        int currentPage = 0;
-
-//        //        using var pd = new PrintDocument();
-//        //        pd.PrinterSettings.PrinterName = printerName;
-//        //        pd.PrinterSettings.PrintToFile = false;
-
-//        //        // ❗ MUST set margins properly
-//        //        pd.DefaultPageSettings.Margins = new Margins(0, 0, 0, 0);
-
-//        //        // ❗ Validate printer
-//        //        if (!pd.PrinterSettings.IsValid)
-//        //        {
-//        //            _logger.LogError("❌ Invalid printer: " + printerName);
-//        //            return Task.FromResult(false);
-//        //        }
-
-//        //        pd.PrintPage += (sender, e) =>
-//        //        {
-//        //            try
-//        //            {
-//        //                var img = bitmaps[currentPage];
-
-//        //                // ✅ Set bitmap resolution metadata so DrawImage knows the source DPI
-//        //                if (img is Bitmap bmp)
-//        //                    bmp.SetResolution(renderDpi, renderDpi);
-
-//        //                // ✅ Convert pixels → 1/100 inch (PrintDocument's unit)
-//        //                // img was rendered at renderDpi pixels/inch
-//        //                // PrintDocument uses 1/100 inch units = multiply by 100/renderDpi
-//        //                float printWidth = img.Width * 100f / renderDpi;
-//        //                float printHeight = img.Height * 100f / renderDpi;
-
-//        //                float x = e.MarginBounds.Left;
-//        //                float y = e.MarginBounds.Top;
-
-//        //                _logger.LogInformation(
-//        //                    "Printing page {Page} → {W}px × {H}px @ {Dpi}dpi → {PW}×{PH} (1/100in)",
-//        //                    currentPage, img.Width, img.Height, renderDpi, printWidth, printHeight);
-
-//        //                e.Graphics.DrawImage(img, x, y, printWidth, printHeight);
-//        //                currentPage++;
-//        //                e.HasMorePages = currentPage < bitmaps.Count;
-//        //            }
-//        //            catch (Exception ex)
-//        //            {
-//        //                _logger.LogError(ex, "❌ PrintPage error");
-//        //                e.HasMorePages = false;
-//        //            }
-//        //        };
-
-//        //        pd.EndPrint += (sender, e) =>
-//        //        {
-//        //            foreach (var img in bitmaps)
-//        //                img.Dispose();
-
-//        //            _logger.LogInformation("🧹 Bitmaps disposed");
-//        //        };
-
-//        //        pd.Print();
-
-//        //        _logger.LogInformation(
-//        //            "✅ Print success → {FileName}",
-//        //            fileName);
-
-//        //        return Task.FromResult(true);
-//        //    }
-//        //    catch (Exception ex)
-//        //    {
-//        //        _logger.LogError(ex,
-//        //            "❌ PrintPdfAsync failed → {PrinterName} | {FileName}",
-//        //            printerName, fileName);
-
-//        //        return Task.FromResult(false);
-//        //    }
-//        //}
-
+//        // ── SavePrintJobAsync ──────────────────────────────────────────────────
 
 //        private async Task SavePrintJobAsync(byte[] fileData, string fileName)
 //        {
 //            try
 //            {
-//                const string saveDir = @"C:\PROD_LIHO_SOK\NETs\PrintJobs";
-//                //const string saveDir = @"C:\inetpub\wwwroot\CafeJubilan_SOK\NETs\PrintJobs";
-
-//                Directory.CreateDirectory(saveDir);
+//                Directory.CreateDirectory(PrintJobDir);
 
 //                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
 //                var safeFileName = string.IsNullOrWhiteSpace(fileName) ? "receipt.pdf" : fileName;
-//                var fullPath = Path.Combine(saveDir, $"{timestamp}_{safeFileName}");
+//                var fullPath = Path.Combine(PrintJobDir, $"{timestamp}_{safeFileName}");
 
 //                await File.WriteAllBytesAsync(fullPath, fileData);
-
 //                _logger.LogInformation("💾 PrintJob saved → {Path}", fullPath);
 //            }
 //            catch (Exception ex)
@@ -611,7 +470,8 @@
 //                        ["m_date"]              = DateTime.Now.ToString("yyyy/MM/dd H:mm:ss"),
 //                    }
 //                };
-//                _logger.LogInformation("UpdateKitchenInfoAsync", payload);
+
+//                _logger.LogInformation("UpdateKitchenInfoAsync payload built for {UpdateFor}", updateFor);
 
 //                return await PostToEvolut(url, payload);
 //            }
@@ -631,13 +491,12 @@
 //                var section = _configuration.GetSection("PrintConfig");
 //                if (!section.Exists())
 //                {
-//                    _logger.LogWarning("GetPrintConfigAsync — PrintConfig section missing from appsettings.json");
+//                    _logger.LogWarning("GetPrintConfigAsync — PrintConfig section missing");
 //                    return Task.FromResult<PrintConfig?>(null);
 //                }
 
 //                var dict = section.Get<Dictionary<string, object>>();
 //                var json = JsonSerializer.Serialize(dict);
-
 //                var printConfig = JsonSerializer.Deserialize<PrintConfig>(json,
 //                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
@@ -660,7 +519,6 @@
 //        private async Task<object?> PostToEvolut(string url, object payload)
 //        {
 //            var client = _httpClientFactory.CreateClient();
-
 //            var innerJson = JsonSerializer.Serialize(payload);
 //            var wrapped = new { jsondata = innerJson };
 //            var json = JsonSerializer.Serialize(wrapped);
@@ -698,7 +556,7 @@
 //}
 
 //// ═══════════════════════════════════════════════════════════════════════════════
-//// CONTROLLER  (unchanged)
+//// CONTROLLER
 //// ═══════════════════════════════════════════════════════════════════════════════
 
 //namespace PROD_LIHO_SOK.Controllers
@@ -719,26 +577,25 @@
 //        }
 
 //        // ── Print ──────────────────────────────────────────────────────────────
+
 //        [HttpPost("print")]
 //        public async Task<IActionResult> Print(
 //            [FromForm] string printerName,
 //            [FromForm] string fileName,
 //            [FromForm] bool rotate = false,
-//            [FromForm] IFormFile? file = null) // Add [FromForm] here   
+//            [FromForm] IFormFile? file = null)
 //        {
 //            try
 //            {
-//                // 1. Validation
 //                if (string.IsNullOrWhiteSpace(printerName))
 //                    return BadRequest(new { success = false, message = "printerName is required" });
 
 //                if (file == null || file.Length == 0)
 //                {
-//                    _logger.LogError("Print — No IFormFile named 'file' found in the request.");
+//                    _logger.LogError("Print — No file found in request.");
 //                    return BadRequest(new { success = false, message = "No file data received. Ensure FormData key is 'file'" });
 //                }
 
-//                // 2. Extract Bytes from the FormFile
 //                byte[] fileData;
 //                using (var ms = new MemoryStream())
 //                {
@@ -746,25 +603,18 @@
 //                    fileData = ms.ToArray();
 //                }
 
-//                // 3. PDF Header Validation (%PDF-)
 //                if (fileData.Length > 4 &&
 //                    fileData[0] == 0x25 && fileData[1] == 0x50 &&
 //                    fileData[2] == 0x44 && fileData[3] == 0x46)
-//                {
-//                    _logger.LogInformation("✅ Valid PDF header detected for {FileName} ({Size} bytes)", fileName, fileData.Length);
-//                }
+//                    _logger.LogInformation("✅ Valid PDF header for {FileName} ({Size} bytes)", fileName, fileData.Length);
 //                else
-//                {
-//                    _logger.LogWarning("⚠️ File received for {FileName} is not a valid PDF or is corrupted.", fileName);
-//                    // We still try to print, but this log helps debug corruption
-//                }
+//                    _logger.LogWarning("⚠️ Not a valid PDF: {FileName}", fileName);
 
-//                // 4. Send to Service
 //                var success = await _printerService.PrintAsync(printerName, fileData, fileName, rotate);
 
 //                if (!success)
 //                {
-//                    _logger.LogWarning("PrintAsync returned false for printer {PrinterName}", printerName);
+//                    _logger.LogWarning("PrintAsync returned false for {PrinterName}", printerName);
 //                    return StatusCode(500, new { success = false, message = $"Print failed on: {printerName}. Check printer status." });
 //                }
 
@@ -777,12 +627,13 @@
 //            }
 //        }
 
+//        // ── Print Label ────────────────────────────────────────────────────────
 
 //        public class PrintLabelRequest
 //        {
-//            public string File { get; set; }  // base64
-//            public string PrinterName { get; set; }
-//            public string FileName { get; set; }
+//            public string File { get; set; } = string.Empty;
+//            public string PrinterName { get; set; } = string.Empty;
+//            public string FileName { get; set; } = string.Empty;
 //            public bool Rotate { get; set; }
 //            public int Dpi { get; set; }
 //            public bool FitToPage { get; set; }
@@ -802,13 +653,9 @@
 //            if (fileData.Length > 4 &&
 //                fileData[0] == 0x25 && fileData[1] == 0x50 &&
 //                fileData[2] == 0x44 && fileData[3] == 0x46)
-//            {
 //                _logger.LogInformation("✅ Valid PDF header for {FileName} ({Size} bytes)", req.FileName, fileData.Length);
-//            }
 //            else
-//            {
 //                _logger.LogWarning("⚠️ Not a valid PDF: {FileName}", req.FileName);
-//            }
 
 //            var success = await _printerService.PrintAsync(req.PrinterName, fileData, req.FileName, req.Rotate);
 //            if (!success)
@@ -816,6 +663,8 @@
 
 //            return Ok(new { success = true, message = $"Sent to printer: {req.PrinterName}" });
 //        }
+
+//        // ── Kitchen ────────────────────────────────────────────────────────────
 
 //        [HttpPost("kitchen")]
 //        public async Task<IActionResult> Kitchen(
@@ -827,7 +676,8 @@
 //            return await ExecutePrintJob(printerName, fileName, rotate, file, "Kitchen");
 //        }
 
-//        private async Task<IActionResult> ExecutePrintJob(string printerName, string fileName, bool rotate, IFormFile? file, string logContext)
+//        private async Task<IActionResult> ExecutePrintJob(
+//            string printerName, string fileName, bool rotate, IFormFile? file, string logContext)
 //        {
 //            try
 //            {
@@ -836,7 +686,7 @@
 
 //                if (file == null || file.Length == 0)
 //                {
-//                    _logger.LogError("{Context} — No file found in the request.", logContext);
+//                    _logger.LogError("{Context} — No file found in request.", logContext);
 //                    return BadRequest(new { success = false, message = "No file data received." });
 //                }
 
@@ -847,11 +697,8 @@
 //                    fileData = ms.ToArray();
 //                }
 
-//                // Simple PDF validation
 //                if (fileData.Length > 4 && fileData[0] == 0x25 && fileData[1] == 0x50)
-//                {
-//                    _logger.LogInformation("✅ {Context}: Valid PDF detected for {FileName}", logContext, fileName);
-//                }
+//                    _logger.LogInformation("✅ {Context}: Valid PDF for {FileName}", logContext, fileName);
 
 //                var success = await _printerService.PrintAsync(printerName, fileData, fileName, rotate);
 
@@ -878,17 +725,14 @@
 //            try
 //            {
 //                var success = await _printerService.OpenCashDrawerAsync(req.PrinterName);
-
-//                _logger.LogInformation("OpenCashDrawer [{Success}] printer: {PrinterName}",
-//                    success, req.PrinterName);
-
+//                _logger.LogInformation("OpenCashDrawer [{Success}] → {PrinterName}", success, req.PrinterName);
 //                return success
 //                    ? Ok(new { success = true })
 //                    : StatusCode(500, new { success = false, message = "Failed to open cash drawer" });
 //            }
 //            catch (Exception ex)
 //            {
-//                _logger.LogError(ex, "OpenCashDrawerAsync failed for printer {PrinterName}", req.PrinterName);
+//                _logger.LogError(ex, "OpenCashDrawer failed for {PrinterName}", req.PrinterName);
 //                return StatusCode(500, new { success = false, message = ex.Message });
 //            }
 //        }
@@ -906,7 +750,7 @@
 //            }
 //            catch (Exception ex)
 //            {
-//                _logger.LogError(ex, "GetPrinterListAsync failed");
+//                _logger.LogError(ex, "GetPrinterList failed");
 //                return StatusCode(500, new { success = false, message = ex.Message });
 //            }
 //        }
@@ -919,21 +763,17 @@
 //            try
 //            {
 //                var printConfig = await _printerService.GetPrintConfigAsync();
-
 //                if (printConfig is null)
 //                {
 //                    _logger.LogWarning("GetPrintConfigAsync returned null");
 //                    return NotFound(new { success = false, message = "PrintConfig not found" });
 //                }
-
-//                _logger.LogInformation("GetPrintConfigAsync succeeded. IsDefault={IsDefault}",
-//                    printConfig.IsDefault);
-
+//                _logger.LogInformation("GetPrintConfig succeeded. IsDefault={IsDefault}", printConfig.IsDefault);
 //                return Ok(new { success = true, data = printConfig });
 //            }
 //            catch (Exception ex)
 //            {
-//                _logger.LogError(ex, "GetPrintConfigAsync failed");
+//                _logger.LogError(ex, "GetPrintConfig failed");
 //                return StatusCode(500, new { success = false, message = ex.Message });
 //            }
 //        }

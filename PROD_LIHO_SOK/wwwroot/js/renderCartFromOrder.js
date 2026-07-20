@@ -380,19 +380,26 @@ function _renderCartFromOrderInternal() {
             return count;
         };
 
+        // Replace the entire image map build block with this:
         try {
+            // 1. Always index sessionStorage MenuItems (all categories, not just current)
+            try {
+                const ss = JSON.parse(sessionStorage.getItem('MenuItems') || '[]');
+                buildImageMapFromArray(ss.flatMap(s => s.items || []), 'sessionStorage');
+            } catch (e) { }
+
+            // 2. Also index current menuGridItems (may have enriched data)
             if (Array.isArray(window.menuGridItems) && window.menuGridItems.length) {
                 buildImageMapFromArray(window.menuGridItems, 'menuGridItems');
-            } else if (window.apiManager?.isLoaded('menuItems')) {
-                const menuData = window.apiManager.loadedData.get('menuItems') || [];
-                buildImageMapFromArray(menuData.flatMap(s => s.items || []), 'apiManager');
-            } else {
-                try {
-                    const ss = JSON.parse(sessionStorage.getItem('MenuItems') || '[]');
-                    buildImageMapFromArray(ss.flatMap(s => s.items || []), 'sessionStorage');
-                } catch (e) { }
             }
 
+            // 3. apiManager as additional source
+            if (window.apiManager?.isLoaded('menuItems')) {
+                const menuData = window.apiManager.loadedData.get('menuItems') || [];
+                buildImageMapFromArray(menuData.flatMap(s => s.items || []), 'apiManager');
+            }
+
+            // 4. itemImageMap overlay
             if (window.itemImageMap?.size > 0) {
                 window.itemImageMap.forEach((url, key) => {
                     if (!imageMap.has(String(key))) imageMap.set(String(key), url || restaurantLogo);
@@ -417,6 +424,7 @@ function _renderCartFromOrderInternal() {
         };
 
         window.globalImageMap = imageMap;
+        if (typeof updateCartCount === 'function') updateCartCount();
 
         // ── LANGUAGE ──────────────────────────────────────────────────────────
         const selectedLang = window.selectedLang
@@ -444,7 +452,10 @@ function _renderCartFromOrderInternal() {
 
         if (!baseItems.length) { renderEmptyCart(); return; }
 
-        showBottomNav();
+        const addonModal = document.getElementById('addonModal');
+        if (!addonModal?.classList.contains('show') && !window.modalState?.isAnyOpen()) {
+            showBottomNav();
+        }
         enableCartButtons();
 
         // ── Voucher info from order ────────────────────────────────────────────
@@ -810,18 +821,26 @@ export function updateBottomNavVisibility() {
         return;
     }
 
-    const shouldHideForModal = window.modalState?.successOpen || window.modalState?.addonOpen;
+    // ✅ Also check addonModal DOM directly — modalState may lag behind
+    const addonModal = document.getElementById('addonModal');
+    const addonModalOpen = addonModal?.classList.contains('show');
+
+    const shouldHideForModal = window.modalState?.successOpen
+        || window.modalState?.addonOpen
+        || window.modalState?.cartOpen  // ✅ hide behind cart modal too
+        || addonModalOpen;              // ✅ direct DOM truth
 
     console.log('🔍 Bottom nav check:', {
         cartOpen: window.modalState?.cartOpen,
         addonOpen: window.modalState?.addonOpen,
         successOpen: window.modalState?.successOpen,
+        addonModalDirect: addonModalOpen,
         shouldHideForModal
     });
 
     if (shouldHideForModal) {
-        bottomNav.style.display = 'none';
         bottomNav.classList.remove('show');
+        bottomNav.style.removeProperty('display');
         console.log('🚫 Bottom nav hidden - blocking modal open');
         return;
     }
@@ -840,15 +859,15 @@ export function updateBottomNavVisibility() {
     }
 
     if (hasCartItems) {
-        bottomNav.style.display = 'flex';
         bottomNav.classList.add('show');
-        bottomNav.style.transform = 'translateY(0)';
-        bottomNav.style.visibility = 'visible';
-        bottomNav.style.opacity = '1';
+        bottomNav.style.removeProperty('display');
+
         console.log('✅ Bottom nav shown - has items');
     } else {
-        bottomNav.style.display = 'none';
         bottomNav.classList.remove('show');
+        bottomNav.classList.add('hide');
+
+        bottomNav.style.removeProperty('display');
     }
 }
 
@@ -920,14 +939,21 @@ function renderEmptyCart() {
 // showBottomNav / enableCartButtons
 // =============================================================================
 function showBottomNav() {
+    // ✅ Hard block — never show while wizard/addon modal is open
+    const addonModal = document.getElementById('addonModal');
+    if (addonModal?.classList.contains('show') || window.modalState?.isAnyOpen()) {
+        console.log('⏭️ showBottomNav skipped — modal is open');
+        return;
+    }
+
     const bottomNav = document.querySelector('.bottom-nav');
     if (bottomNav) {
-        bottomNav.classList.add('show');
         bottomNav.classList.remove('hide', 'hidden');
-        bottomNav.style.setProperty('display', 'flex', 'important');
-        bottomNav.style.setProperty('transform', 'translateY(0)', 'important');
-        bottomNav.style.setProperty('visibility', 'visible', 'important');
-        bottomNav.style.setProperty('opacity', '1', 'important');
+        // Remove all inline style overrides — let CSS class control display
+        bottomNav.style.removeProperty('display');
+        bottomNav.style.removeProperty('transform');
+        bottomNav.style.removeProperty('visibility');
+        bottomNav.style.removeProperty('opacity');
         bottomNav.style.removeProperty('animation');
         console.log('✅ Bottom nav shown');
     }
@@ -1640,7 +1666,8 @@ export function showSuccessModal(orderDetails) {
                     if (!parent) return '';
                     const imageUrl = (typeof getOrderItemImageUrl === 'function'
                         ? getOrderItemImageUrl(parent) : null) || restaurantLogo;
-                    const itemName = parent.item_name || parent.product_name || 'Unknown Item';
+                    //const itemName = parent.item_name || parent.product_name || 'Unknown Item';
+                    const itemName = parent.item_desc;
                     const qty = parent.qty || 1;
                     const price = parseFloat(parent.sub_total || parent.amt || 0);
                     const remarks = parent.remarks ? parent.remarks.trim() : '';
@@ -1674,7 +1701,7 @@ export function showSuccessModal(orderDetails) {
                                         <div class="order-item-addons"
                                              style="border-left-color:${primaryColor};">
                                             ${addons.map(a => {
-                        const aName = a.item_name || a.product_name || 'Unknown';
+                        const aName = a.item_desc || a.item_name || a.product_name || 'Unknown';
                         const aQty = a.qty || 1;
                         const aPrice = parseFloat(a.sub_total || a.amt || 0);
                         return `
@@ -1812,7 +1839,7 @@ export function showSuccessModal(orderDetails) {
             ? printingDone
             : Promise.resolve();
 
-        const safetyTimeout = new Promise(r => setTimeout(r, 30_000, 'timeout'));
+        const safetyTimeout = new Promise(r => setTimeout(r, 120_000, 'timeout'));
 
         Promise.race([printPromise, safetyTimeout]).then(reason => {
             clearInterval(barTick);

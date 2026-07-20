@@ -81,11 +81,10 @@ import {
     clearCart,
     takeaway
 } from '../utils/tqr.js';
-import { getPriceByServiceType, applyPromotions, getNewOrder, getNewOrderSOK, addTax, calcOrderAmt, getSysSetting, isAbsorbTax, getAvailableServiceTypes } from '../utils/pos.js';
+import { getPriceByServiceType, applyPromotions, getNewOrder, getNewOrderSOK, addTax, calcOrderAmt, isAbsorbTax } from '../utils/pos.js';
 import { getNowInAPIFormat } from '../utils/common.js';
 import { showAddOnModal, showWizardModal, scrollModalToTop, MENU_CONFIG, setMenuRenderingMode } from './Home.js';
 import { renderCartFromOrder, showErrorModal, closeErrorModal, showSuccessModal, closeModal } from './renderCartFromOrder.js';
-import { clearLocalImageCache } from './ImageCache.js'; // adjust path
 
 // ─── SESSION STORAGE KEY ──────────────────────────────────────────────────────
 // Single key for menu persistence across page reloads and post-order returns.
@@ -107,7 +106,6 @@ let serviceRate = parseFloat(sessionStorage.getItem("ServiceCharge"));
 const selectedLang = sessionStorage.getItem("selectedLang");
 const orderType = localStorage.getItem("orderType");
 window.__isReload = performance.getEntriesByType("navigation")[0]?.type === "reload";
-
 
 // ─── FIX 1: Pre-parse AvailablePOSMenuItems ONCE at startup ──────────────────
 // Previously parsed inside shouldShowItem() on every single item call.
@@ -231,7 +229,7 @@ async function initializeDeviceId() {
     let deviceId = getDeviceIdFromUrl();
     if (!deviceId) deviceId = storage.getItem("sok_device_id");
     if (!deviceId) {
-        deviceId = `KIOSK_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        deviceId = `KIOSK_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         console.log('🆕 Generated fallback device ID:', deviceId);
     } else {
         console.log('✅ Using device ID:', deviceId);
@@ -580,7 +578,6 @@ export async function loadMenuItems() {
 export function invalidateMenuCache() {
     sessionStorage.removeItem(MENU_CACHE_KEY);
     apiManager.clearCache('menuItems');
-    clearLocalImageCache();
     console.log('🗑️ Menu cache invalidated');
 }
 
@@ -806,7 +803,7 @@ async function initializeApp() {
 
             if (!isWarm) {
                 setBootStatus('Connecting to server…');
-                await loadStoreDetails();
+                loadStoreDetails();
 
                 setBootStatus('Loading store settings…');
                 await Promise.all([loadSvcs(), loadStoreSetting(), loadgetStoreRegisterPrinter()]);
@@ -1135,25 +1132,143 @@ function patchCategoryImages() {
 // Also pre-warms menu data on landing show so the tap itself is near-instant.
 export async function selectOrderType(type, language = 'en') {
     window._selectStart = performance.now();
+    console.log(`⏱️ selectOrderType started`);
     window.isSelectingOrderType = true;
-    window._pendingOrderType = type; // ← set before any awaits so isAbsorbTax can read it
     console.log('🎯 selectOrderType called:', { type, language });
 
     if (!type || (type !== 'T' && type !== 'E' && type !== 'Q')) {
         console.error('❌ Invalid order type:', type);
         window.isSelectingOrderType = false;
-        window._pendingOrderType = null;
         return;
     }
 
     try {
-        // ── 1. INSTANT: visual feedback + overlay fade — no awaits yet ─patchCategoryImages─────
+
+        localStorage.setItem("orderType", type);
+        const orderStore = window.useOrderStore?.getState();
+
         const selectedOption = document.querySelector(`.landing-option[data-type="${type}"]`);
         if (selectedOption) {
             selectedOption.style.transform = 'scale(0.94)';
             selectedOption.style.filter = 'brightness(0.9)';
         }
 
+        fetch('/API/GetDeviceSession', { method: 'GET', cache: 'no-store', headers: { 'Content-Type': 'application/json' } })
+            .then(async res => {
+                if (res.ok) {
+                    const data = await res.json();
+                    const sid = data?.session_id || data?.sessionId || data?.SessionId;
+                    if (sid) sessionStorage.setItem('device_session_id', sid);
+                    console.log('✅ Device session refreshed (background)');
+                }
+            })
+            .catch(err => console.warn('⚠️ Device session refresh error (non-fatal):', err.message));
+
+        loadgetStoreRegisterPrinter();
+
+        if (!window.isInitialized && !window.isInitializing) {
+            await initializeApp();
+        } else {
+            console.log('⏭️ selectOrderType: initializeApp already done, skipping');
+        }
+
+        const serviceCharges = JSON.parse(sessionStorage.getItem('ServiceChargeJs') || '[]');
+        const svcLookupType = (type === 'Q' || type === 'E') ? 'E' : 'T';
+        const matchedSvc = serviceCharges.find(s => s.service_type === svcLookupType);
+        sessionStorage.setItem('ServiceCharge', matchedSvc ? matchedSvc.service_value : 0);
+
+
+        const menuTaxFlag = isAbsorbTax() ? "Y" : "N";
+
+        const currentStoredType = orderStore?.service_type;
+        const hasExistingItems = orderStore?.sales_dtls?.length > 0;
+        const isColdBoot = !window._orderTypeSelected;
+        const isSameType = !isColdBoot && (currentStoredType === type) && hasExistingItems;
+        //const serviceTypeInfo = type === 'T' ? 'Takeaway' : (type === 'Q' ? 'QR Order' : 'DineIn');
+
+        let activeOrder;
+        if (isSameType) {
+            console.log("♻️ Restoring existing draft");
+            const memberInfo = (() => {
+                try {
+                    const raw = localStorage.getItem('member_info') || localStorage.getItem('memberInfo');
+                    return raw ? JSON.parse(raw) : null;
+                } catch { return null; }
+            })();
+
+            activeOrder = {
+                ...orderStore,
+                service_type: type,
+                absorb_tax: menuTaxFlag,
+                //service_type_info: serviceTypeInfo,
+                // ✅ Always refresh member fields from localStorage
+                customer_code: memberInfo?.customer_code || orderStore?.customer_code || '',
+                customer_name: memberInfo?.name || memberInfo?.Name || orderStore?.customer_name || '',
+                contact_no: memberInfo?.phone || memberInfo?.MobileNo || orderStore?.contact_no || '',
+                email: memberInfo?.email || memberInfo?.Email || orderStore?.email || '',
+            };
+
+        } else {
+            console.log(isColdBoot ? "❄️ Cold boot: Creating fresh order" : "🔄 Type Mismatch: Wiping old data");
+            localStorage.removeItem("orderId");
+            localStorage.removeItem("active_cart");
+
+            // ✅ Read member info from localStorage before creating order
+            const memberInfo = (() => {
+                try {
+                    const raw = localStorage.getItem('member_info') || localStorage.getItem('memberInfo');
+                    return raw ? JSON.parse(raw) : null;
+                } catch { return null; }
+            })();
+
+            console.log('👤 Member at order creation:', {
+                found: !!memberInfo,
+                customer_code: memberInfo?.customer_code,
+                card_no: memberInfo?.card_no || memberInfo?.CardNo,
+                name: memberInfo?.name || memberInfo?.Name,
+            });
+
+            activeOrder = getNewOrderSOK({
+                // ✅ Inject member fields — empty string fallback if guest
+                customer_code: memberInfo?.customer_code || '',
+                customer_name: memberInfo?.name || memberInfo?.Name || '',
+                contact_no: memberInfo?.phone || memberInfo?.MobileNo || '',
+                email: memberInfo?.email || memberInfo?.Email || '',
+                card_no: memberInfo?.card_no || memberInfo?.CardNo || '',
+                table_no: '',
+                service_type: type,
+            //    service_type_info: serviceTypeInfo,
+            });
+
+            if (window.useOrderStore) {
+                window.useOrderStore.setState({
+                    orderId: null,
+                    sales_dtls: [],
+                    net_amt: 0,
+                    sub_total: 0,
+                    total_tax: 0,
+                    lastSNo: 0,
+                    service_type: type,
+                    // ✅ Also set in store
+                    customer_code: memberInfo?.customer_code || '',
+                    customer_name: memberInfo?.name || memberInfo?.Name || '',
+                    contact_no: memberInfo?.phone || memberInfo?.MobileNo || '',
+                    email: memberInfo?.email || memberInfo?.Email || '',
+                });
+            }
+
+        }
+
+        if (window.useOrderStore) {
+            window.useOrderStore.getState().setOrder(activeOrder);
+            if (!isSameType) window.useOrderStore.getState().setLastSNo(0);
+        }
+
+        window._orderTypeSelected = true;
+
+
+
+        // ✅ 2. THEN hide landing overlay — shield is outside it so survives
         const landingOverlay = document.getElementById('landingOverlay');
         if (landingOverlay) {
             landingOverlay.style.opacity = '0';
@@ -1162,183 +1277,63 @@ export async function selectOrderType(type, language = 'en') {
                 if (window.sokWebSocket) {
                     window.sokWebSocket.stopSessionTimeout();
                     window.sokWebSocket.startSessionTimeout();
-                    console.log('⏱️ Session timeout started — order type selected:', type);
+                    console.log("⏱️ Session timeout started — order type selected:", type);
                 }
             }, 500);
         }
 
-        // ── 2. Fire all non-blocking work immediately ────────────────────────
-        await loadgetStoreRegisterPrinter();
-
-        fetch('/API/GetDeviceSession', {
-            method: 'GET', cache: 'no-store',
-            headers: { 'Content-Type': 'application/json' },
-        })
-            .then(async res => {
-                if (!res.ok) return;
-                const data = await res.json();
-                const sid = data?.session_id || data?.sessionId || data?.SessionId;
-                if (sid) sessionStorage.setItem('device_session_id', sid);
-                console.log('✅ Device session refreshed (background)');
-            })
-            .catch(err => console.warn('⚠️ Device session refresh error (non-fatal):', err.message));
-
-        // ── 3. Await init only if needed — runs while overlay is already fading
-        if (!window.isInitialized && !window.isInitializing) {
-            await initializeApp();
-        } else if (window.isInitializing) {
-            await window.initPromise;
-        }
-
-        // ── 4. Set AFTER initializeApp — restoreCacheAfterReload wipes localStorage during init
-        localStorage.setItem('orderType', type);
-
-        const serviceCharges = JSON.parse(sessionStorage.getItem('ServiceChargeJs') || '[]');
-        const svcLookupType = (type === 'Q' || type === 'E') ? 'E' : 'T';
-        const matchedSvc = serviceCharges.find(s => s.service_type === svcLookupType);
-        sessionStorage.setItem('ServiceCharge', matchedSvc ? matchedSvc.service_value : 0);
-
-        // service_type is just `type` here — already set in localStorage above
-        const service_type = type;
-
-        const service_type_info = SERVICE_TYPES
-            ?.find(item => item?.service_type === service_type)
-            ?.service_type_info;
-
-        // isAbsorbTax reads window._pendingOrderType as fallback when
-        // activeOrder.service_type and localStorage are not yet set
-        const menuTaxFlag = isAbsorbTax() ? 'Y' : 'N';
-        const orderStore = window.useOrderStore?.getState();
-        const isColdBoot = !window._orderTypeSelected;
-        const isSameType = !isColdBoot
-            && orderStore?.service_type === type
-            && orderStore?.sales_dtls?.length > 0;
-
-        const getMemberInfo = () => {
-            try {
-                const raw = localStorage.getItem('member_info') || localStorage.getItem('memberInfo');
-                return raw ? JSON.parse(raw) : null;
-            } catch { return null; }
-        };
-
-        // ── 5. Build order — getNewOrderSOK is synchronous, completes immediately
-        let activeOrder;
-
-        if (isSameType) {
-            console.log('♻️ Restoring existing draft');
-            const m = getMemberInfo();
-            activeOrder = {
-                ...orderStore,
-                service_type: type,
-                absorb_tax: menuTaxFlag,
-                customer_code: m?.customer_code || orderStore?.customer_code || '',
-                customer_name: m?.name || m?.Name || orderStore?.customer_name || '',
-                contact_no: m?.phone || m?.MobileNo || orderStore?.contact_no || '',
-                email: m?.email || m?.Email || orderStore?.email || '',
-            };
-        } else {
-            console.log(isColdBoot ? '❄️ Cold boot: Creating fresh order' : '🔄 Type mismatch: Wiping old data');
-            localStorage.removeItem('orderId');
-            localStorage.removeItem('active_cart');
-
-            const m = getMemberInfo();
-            console.log('👤 Member at order creation:', {
-                found: !!m,
-                customer_code: m?.customer_code,
-                card_no: m?.card_no || m?.CardNo,
-                name: m?.name || m?.Name,
-            });
-
-            // getNewOrderSOK is synchronous — result is ready on the next line
-            activeOrder = getNewOrderSOK({
-                service_type: type,
-                service_type_info,
-                customer_code: m?.customer_code || '',
-                customer_name: m?.name || m?.Name || '',
-                contact_no: m?.phone || m?.MobileNo || '',
-                email: m?.email || m?.Email || '',
-                card_no: m?.card_no || m?.CardNo || '',
-                table_no: '',
-            });
-
-            window.useOrderStore?.setState({
-                orderId: null,
-                sales_dtls: [],
-                net_amt: 0,
-                sub_total: 0,
-                total_tax: 0,
-                lastSNo: 0,
-                service_type: type,
-                customer_code: m?.customer_code || '',
-                customer_name: m?.name || m?.Name || '',
-                contact_no: m?.phone || m?.MobileNo || '',
-                email: m?.email || m?.Email || '',
-            });
-        }
-
-        // activeOrder is fully built here — both paths above are synchronous
-        window.useOrderStore?.getState().setOrder(activeOrder);
-        if (!isSameType) window.useOrderStore?.getState().setLastSNo(0);
-        window._orderTypeSelected = true;
-
-        // ── 6. Fire-and-forget server sync ───────────────────────────────────
+        // ✅ 3. Fire server syncs in background — don't block menu render
         const sanitizedSalesDtls = (activeOrder.sales_dtls || []).map(dtl => ({
             ...dtl,
             is_absorbtax: typeof dtl.is_absorbtax === 'string'
                 ? (dtl.is_absorbtax === 'Y' ? 1 : parseInt(dtl.is_absorbtax) || 0)
-                : (dtl.is_absorbtax ? 1 : 0),
+                : (dtl.is_absorbtax ? 1 : 0)
         }));
+        const syncPayload = {
+            orderType: type,
+            orderData: {
+                ...activeOrder,
+                sales_dtls: sanitizedSalesDtls,
+                doc_date: activeOrder.doc_date || new Date().toISOString().replace('T', ' ').substring(0, 19),
+                absorb_tax: menuTaxFlag,
+                absorb_tax_info: menuTaxFlag === "Y" ? "Absorb Tax" : "Not Absorb Tax",
+                service_type: type,
+                //service_type_info: serviceTypeInfo,
+                sub_total: String(activeOrder.sub_total || "0.00"),
+                total_tax: String(activeOrder.total_tax || "0.00"),
+                net_amt: String(activeOrder.net_amt || "0.00")
+            },
+            status: "N"
+        };
 
+        // Fire-and-forget — menu render does not need to wait for these
         Promise.all([
             typeof updateOrderCacheOnServer === 'function'
-                ? updateOrderCacheOnServer(activeOrder)
-                    .catch(e => console.warn('⚠️ updateOrderCacheOnServer failed:', e))
+                ? updateOrderCacheOnServer(activeOrder).catch(e => console.warn('⚠️ updateOrderCacheOnServer failed:', e))
                 : Promise.resolve(),
             typeof syncOrderCacheToServer === 'function'
-                ? syncOrderCacheToServer({
-                    orderType: type,
-                    status: 'N',
-                    orderData: {
-                        ...activeOrder,
-                        sales_dtls: sanitizedSalesDtls,
-                        doc_date: activeOrder.doc_date
-                            || new Date().toISOString().replace('T', ' ').substring(0, 19),
-                        absorb_tax: menuTaxFlag,
-                        absorb_tax_info: menuTaxFlag === 'Y' ? 'Absorb Tax' : 'Not Absorb Tax',
-                        service_type: type,
-                        sub_total: String(activeOrder.sub_total || '0.00'),
-                        total_tax: String(activeOrder.total_tax || '0.00'),
-                        net_amt: String(activeOrder.net_amt || '0.00'),
-                    },
-                }).catch(e => console.warn('⚠️ syncOrderCacheToServer failed:', e))
+                ? syncOrderCacheToServer(syncPayload).catch(e => console.warn('⚠️ syncOrderCacheToServer failed:', e))
                 : Promise.resolve(),
         ]);
 
         if (typeof updateCartCount === 'function') updateCartCount();
 
-        // ── 7. Menu load ─────────────────────────────────────────────────────
+        // ✅ 4. Load and render menu — shield visible the whole time
         await loadAndRenderMenu('all', language);
         await waitForMenuPaint();
         patchCategoryImages();
+        // ✅ 5. Hide shield only once, after menu is in DOM
         hideMenuLoadingShield();
 
     } catch (error) {
-        console.error('❌ Critical error in selectOrderType:', error);
-        console.error('❌ Stack:', error?.stack);
-        hideMenuLoadingShield();
-        //location.reload(true);
-
-        //// Restore landing so user can retry — don't hard reload
-        //const landingOverlay = document.getElementById('landingOverlay');
-        //if (landingOverlay) {
-        //    landingOverlay.style.opacity = '1';
-        //    landingOverlay.classList.remove('hidden');
-        //}
+        console.error("❌ Critical error in selectOrderType:", error);
+        hideMenuLoadingShield();  // always clean up on error
+        location.reload(true);
     } finally {
-        window._pendingOrderType = null; // ← clean up after function completes
         setTimeout(() => { window.isSelectingOrderType = false; }, 600);
     }
 }
+
 
 /**
  * Resolves only after the menu UI is fully painted:
@@ -1748,13 +1743,7 @@ async function _doLoadAndRenderMenu(category, language) {
         });
 
         window.menuGridItems = enrichedItems;
-        requestIdleCallback?.(() => {
-            enrichedItems.forEach(item => {
-                const url = toProxyUrl(item.tqr_image_url || item.item_image || item.image);
-                if (url) poolImage(url);
-            });
-            console.log(`🖼️ Image pool warmed: ${_decodedImagePool.size} images`);
-        }, { timeout: 5000 });
+
         // ── POST-ENRICHMENT: Preload first 18 item images ─────────────────────
         // tqr_image_url comes from FullItems — must run after enrichment.
         // 18 = 2 full rows of 3 columns × 3 visible rows on kiosk viewport.
@@ -2293,10 +2282,14 @@ function isWithinMenuTimeWindow(item) {
 // The map is built once at startup and once on warm boot (see initializeApp).
 function shouldShowItem(item) {
     if (!item) return false;
+
+    // ── 1. TIME WINDOW RULE ───────────────────────────────────────────────
     if (!isWithinMenuTimeWindow(item)) return false;
 
+    // ── 2. IDENTITY RESOLUTION ────────────────────────────────────────────
     const itemNo = item.item_no?.trim();
     const skuNo = item.sku_no?.trim();
+
     const currentOrderType = localStorage.getItem('orderType');
     if (item.hide_from_tqr === 'Y' || item.hide_from_tqr === '1') return false;
 
@@ -2309,20 +2302,13 @@ function shouldShowItem(item) {
         avlRecord = window.itemAvlMap[skuNo];
     }
 
-    // is_emenu_disable applies universally across all order types, so it's
-    // checked as an OR across both sources — either one flagging disabled
-    // is enough to hide the item. No fallback/override priority between
-    // avlRecord and the item's own field; both must agree it's enabled.
-    const isDisabled =
-        item.is_emenu_disable === 'Y' || item.is_emenu_disable === '1' ||
-        avlRecord?.is_emenu_disable === 'Y';
-    if (isDisabled) return false;
+    // ── 3. STOCK STATUS MATCHING ──────────────────────────────────────────
+    const isDisabled = avlRecord
+        ? avlRecord.is_emenu_disable === 'Y'
+        : (item.is_emenu_disable === 'Y' || item.is_emenu_disable === '1');
 
-    // Same OR treatment for is_soldout, for the same reason.
-    const isSoldOut =
-        item.is_soldout === 'Y' || item.is_soldout === '1' ||
-        avlRecord?.is_soldout === 'Y';
-    if (isSoldOut) return false;
+    if (isDisabled) return false;
+    if (avlRecord?.is_soldout === 'Y') return false;
 
     if (currentOrderType === 'E' && (item.hide_item_dinein === 'Y' || item.hide_item_dinein === '1')) return false;
     if (currentOrderType === 'T' && (item.hide_item_takeaway === 'Y' || item.hide_item_takeaway === '1')) return false;
@@ -2919,7 +2905,27 @@ function ensureItemModal() {
         </div>
     `;
     document.body.appendChild(modal);
-
+    const style = document.createElement('style');
+    style.textContent = `
+        #itemDescModal{position:fixed;inset:0;background:rgba(0,0,0,.50);backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;opacity:0;pointer-events:none;transition:opacity .22s ease;}
+        #itemDescModal.idm-open{opacity:1;pointer-events:all;}
+        .idm-card{background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.22);width:100%;max-width:420px;overflow:hidden;transform:translateY(20px) scale(.97);transition:transform .25s cubic-bezier(.34,1.56,.64,1);}
+        #itemDescModal.idm-open .idm-card{transform:translateY(0) scale(1);}
+        .idm-image-wrap{position:relative;}
+        #idmImg{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;height:350px;}
+        .idm-body{padding:20px 24px 24px;}
+        .idm-category{font-size:.68rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#c8423f;margin-bottom:6px;}
+        .idm-title{font-size:1.05rem;font-weight:700;line-height:1.35;margin-bottom:8px;color:#1a1a1a;}
+        .idm-desc{font-size:.87rem;color:#6b6560;line-height:1.6;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid #e8e4de;}
+        .idm-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+        .idm-price{font-size:1.4rem;font-weight:800;color:#c8423f;}
+        .idm-actions{display:flex;gap:10px;}
+        .idm-close-btn{background:#f3f0eb;color:#6b6560;border:none;border-radius:8px;padding:9px 16px;font-size:.83rem;font-weight:600;cursor:pointer;}
+        .idm-close-btn:hover{background:#e8e4de;}
+        .idm-add-btn{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:.83rem;font-weight:700;cursor:pointer;}
+        .idm-add-btn:hover{background:#1d4ed8;}
+    `;
+    document.head.appendChild(style);
     const closeModal = () => { modal.classList.remove('idm-open'); document.body.style.overflow = ''; modal._currentItemId = null; };
     document.getElementById('idmCloseBtn').addEventListener('click', closeModal);
     modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
@@ -3377,53 +3383,6 @@ function menuGridClickHandler(e) {
     openItemModal(fullItem, imageUrl, displayPrice, fullItem.category_code || '');
 }
 
-
-const _decodedImagePool = new Map();
-const DECODED_POOL_MAX = 400; // ~400 menu images max
-
-function poolImage(url) {
-    if (!url || _decodedImagePool.has(url)) return;
-    if (_decodedImagePool.size >= DECODED_POOL_MAX) {
-        // Evict oldest entry
-        const firstKey = _decodedImagePool.keys().next().value;
-        _decodedImagePool.delete(firstKey);
-    }
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = url;
-    img.decode?.().catch(() => { });
-    _decodedImagePool.set(url, img);
-}
-
-/**
- * After a grid render, replace each <img> with its pooled twin (already
- * downloaded + decoded). Pooled images render instantly with no request.
- * Non-pooled images are added to the pool for next time.
- */
-function swapInPooledImages(container) {
-    container.querySelectorAll('.menu-item .item-image img').forEach(img => {
-        const url = img.src;
-        if (!url) return;
-        const pooled = _decodedImagePool.get(url);
-        if (pooled && pooled.complete && pooled.naturalWidth > 0) {
-            // Clone attributes/styles onto the pooled node and swap
-            const clone = pooled.cloneNode();
-            clone.alt = img.alt;
-            clone.className = img.className + ' loaded';
-            clone.style.cssText = img.style.cssText;
-            clone.style.opacity = '1';
-            img.replaceWith(clone);
-        } else {
-            // First sighting — pool it once it finishes loading
-            if (img.complete && img.naturalWidth > 0) {
-                _decodedImagePool.set(url, img.cloneNode());
-            } else {
-                img.addEventListener('load', () => poolImage(url), { once: true });
-            }
-        }
-    });
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // RENDER MENU GRID  (Workflow variant)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3830,7 +3789,6 @@ async function renderCategoryByCodeWorkFlow(categoryCode, selectedLanguage = '')
         container.appendChild(sectionEl);
 
         if (typeof renderMenuGrid === 'function') await renderMenuGrid(itemsToRender);
-        swapInPooledImages(container);
         currentRenderController = null;
 
     } catch (error) {
@@ -4608,32 +4566,23 @@ async function handleRemoveClick(e) {
         const sNo = target.getAttribute('data-sno');
         if (!sNo) return;
 
-        // ✅ Prevent double-fire: ignore if already processing this s_no
-        if (window._removingItems?.has(sNo)) {
-            console.log('⏭️ Already removing s_no:', sNo, '— ignoring duplicate click');
-            return;
-        }
-        window._removingItems = window._removingItems || new Set();
-        window._removingItems.add(sNo);
-
         const { order } = useOrder();
-        if (!order || !Array.isArray(order.sales_dtls)) {
-            window._removingItems.delete(sNo);
-            return;
-        }
+        if (!order || !Array.isArray(order.sales_dtls)) return;
 
         console.log('🗑️ Remove button clicked for s_no:', sNo);
 
         const orderItem = order.sales_dtls.find(item => String(item.s_no) === String(sNo));
         if (!orderItem) {
             console.error('❌ Item not found:', sNo);
-            window._removingItems.delete(sNo);
             return;
         }
 
+        // ✅ Capture voucher code BEFORE deletion
         const activeVoucherCode = order.voucher_code || null;
+
         await deleteIndividualItem(orderItem);
 
+        // ✅ Always clear voucher after any item removal — regardless of cart state
         if (activeVoucherCode) {
             console.log('🧹 Clearing voucher after item removal:', activeVoucherCode);
             await removeVoucherAndRecalculate(activeVoucherCode);
@@ -4642,7 +4591,6 @@ async function handleRemoveClick(e) {
         setTimeout(() => {
             if (typeof renderCartFromOrder === 'function') renderCartFromOrder();
             if (typeof updateCartCount === 'function') updateCartCount();
-            window._removingItems.delete(sNo);
         }, 50);
 
     } catch (error) {
@@ -4650,7 +4598,6 @@ async function handleRemoveClick(e) {
         if (typeof renderCartFromOrder === 'function') {
             setTimeout(renderCartFromOrder, 100);
         }
-        window._removingItems?.delete(target?.getAttribute('data-sno'));
     }
 }
 
@@ -6895,7 +6842,7 @@ async function getOrCreateOrderId() {
 async function updateOrderCacheOnServer(orderData = null) {
     try {
         const deviceId = localStorage.getItem("sok_device_id");
-        const orderType = localStorage.getItem("orderType");
+        const orderType = localStorage.getItem("orderType") || "E";
 
         if (!deviceId) return { success: false };
 
@@ -6906,11 +6853,13 @@ async function updateOrderCacheOnServer(orderData = null) {
         }
 
         // --- 🛡️ GHOST CART PROTECTION START ---
+        // Identify "Real" food items (excluding auto-surcharges)
         const realFoodItems = (sourceOrder?.sales_dtls || []).filter(i =>
             i.item_no !== 'TAKEAWAY_CHARGE' &&
             i.item_type !== 'CHARGE'
         );
 
+        // If NO real food exists, but charges do, clear them before sync
         if (realFoodItems.length === 0 && (sourceOrder?.sales_dtls?.length > 0)) {
             console.log('🧹 Ghost cart detected (only charges left). Purging for sync.');
             sourceOrder.sales_dtls = [];
@@ -6921,23 +6870,9 @@ async function updateOrderCacheOnServer(orderData = null) {
         }
         // --- 🛡️ GHOST CART PROTECTION END ---
 
-        // ✅ No more early-return on empty cart — fall through and sync to
-        // server with sales_dtls: [] so backend can persist + broadcast cache_updated.
-        const isEmpty = !sourceOrder || !sourceOrder.sales_dtls || sourceOrder.sales_dtls.length === 0;
-        if (isEmpty) {
-            console.log("📡 Syncing EMPTY cart to server (so cache_updated can broadcast clear)...");
-            // Ensure sourceOrder is a usable object even if null/undefined
-            sourceOrder = sourceOrder || {};
-            sourceOrder.sales_dtls = [];
-            sourceOrder.sub_total = "0.00";
-            sourceOrder.total_tax = "0.00";
-            sourceOrder.total_svc = "0.00";
-            sourceOrder.net_amt = "0.00";
-            sourceOrder.total_disc = sourceOrder.total_disc ?? "0.00";
-            sourceOrder.round_adj_amt = sourceOrder.round_adj_amt ?? "0.00";
-            sourceOrder.tips_amt = sourceOrder.tips_amt ?? "0";
-            sourceOrder.total_tender_amt = sourceOrder.total_tender_amt ?? "0";
-            sourceOrder.change_amt = sourceOrder.change_amt ?? "0";
+        if (!sourceOrder || !sourceOrder.sales_dtls || sourceOrder.sales_dtls.length === 0) {
+            console.log("Empty order state synced (Cart cleared)");
+            return { success: true };
         }
 
         const orderId = await getOrCreateOrderId();
@@ -6945,13 +6880,19 @@ async function updateOrderCacheOnServer(orderData = null) {
         const toStr = (val) => (val === null || val === undefined) ? "0.00" : String(val);
         const toInt = (val) => (val === true || val === "Y" || val === 1) ? 1 : 0;
 
+        // 1. Clean the Sales Details array
+        //    ✅ Strip internal-only fields (_qty_per_serving, _is_free, etc.)
+        //    so they don't pollute the server payload or come back in cache_updated
+        //    causing WS sync to overwrite local state with stale derived values.
         const INTERNAL_FIELDS = ['_qty_per_serving', '_is_free', '_promo_applied'];
 
         const cleanedSalesDtls = sourceOrder.sales_dtls.map(dtl => {
             const cleaned = { ...dtl };
 
+            // Remove all internal-only fields
             INTERNAL_FIELDS.forEach(field => delete cleaned[field]);
 
+            // Normalise types expected by the server
             cleaned.is_absorbtax = toInt(dtl.is_absorbtax);
             cleaned.IsAbsorbtax = toInt(dtl.is_absorbtax);
             cleaned.unit_price = toStr(dtl.unit_price);
@@ -6962,6 +6903,7 @@ async function updateOrderCacheOnServer(orderData = null) {
             return cleaned;
         });
 
+        // 2. Construct the strictly-typed payload
         const payload = {
             OrderType: orderType,
             Status: "N",
@@ -6979,7 +6921,7 @@ async function updateOrderCacheOnServer(orderData = null) {
                 total_tender_amt: toStr(sourceOrder.total_tender_amt),
                 change_amt: toStr(sourceOrder.change_amt),
                 ServiceType: orderType,
-                ServiceTypeInfo: SERVICE_TYPES?.find(item => item?.service_type === orderType)?.service_type_info,
+                ServiceTypeInfo: orderType === "E" ? "DineIn" : (orderType === "Q" ? "QuickService" : "Takeaway"),
                 sales_dtls: cleanedSalesDtls,
                 SalesDtls: cleanedSalesDtls
             }
@@ -6992,7 +6934,7 @@ async function updateOrderCacheOnServer(orderData = null) {
         });
 
         if (response.ok) {
-            console.log(isEmpty ? "✅ Empty cart sync successful" : "✅ Sync Successful");
+            console.log("✅ Sync Successful");
             return { success: true };
         }
 
@@ -7377,38 +7319,7 @@ export function getRemarksCache() {
 }
 
 // Add once at top of the file, outside the function
-// ─── Persistent image URL cache ──────────────────────────────────────────────
-const IMAGE_URL_CACHE_KEY = 'sok_image_url_cache';
-const IMAGE_URL_CACHE_TTL = 30 * 60 * 1000; // match menu cache TTL
-
-const _imageUrlCache = (() => {
-    try {
-        const raw = sessionStorage.getItem(IMAGE_URL_CACHE_KEY);
-        if (raw) {
-            const { entries, ts } = JSON.parse(raw);
-            if (Date.now() - ts < IMAGE_URL_CACHE_TTL && Array.isArray(entries)) {
-                console.log(`⚡ Image URL cache restored: ${entries.length} entries`);
-                return new Map(entries);
-            }
-        }
-    } catch (e) { /* corrupt cache — start fresh */ }
-    return new Map();
-})();
-
-// Debounced write-back so we don't hammer sessionStorage on every lookup
-let _imgCachePersistTimer = null;
-function persistImageUrlCache() {
-    clearTimeout(_imgCachePersistTimer);
-    _imgCachePersistTimer = setTimeout(() => {
-        try {
-            sessionStorage.setItem(IMAGE_URL_CACHE_KEY, JSON.stringify({
-                entries: Array.from(_imageUrlCache.entries()),
-                ts: Date.now()
-            }));
-        } catch (e) { /* quota — non-fatal */ }
-    }, 500);
-}
-
+const _imageUrlCache = new Map();
 let _menuItemsIndex = null; // pre-built lookup index
 let _fullItemsIndex = null;
 
@@ -7493,26 +7404,7 @@ export function getItemImageUrl(item) {
 
     // ✅ Cache result for all future calls
     _imageUrlCache.set(item.item_no, imageUrl);
-    persistImageUrlCache();
     return imageUrl;
-}
-
-
-const IMAGE_DOMAIN_KEY = 'sok_image_domain';
-
-function getImageDomainConfig() {
-    if (window._imgDomainCfg) return window._imgDomainCfg;
-    try {
-        const raw = sessionStorage.getItem(IMAGE_DOMAIN_KEY);
-        if (raw) return (window._imgDomainCfg = JSON.parse(raw));
-    } catch { }
-    const cfg = {
-        base: RESTAURANT_CONFIG.baseImageUrl || '',
-        proxyPrefix: '/api/GetImageProxy?imageUrl=',
-        logo: RESTAURANT_CONFIG.logo || '/img/Logo.png'
-    };
-    sessionStorage.setItem(IMAGE_DOMAIN_KEY, JSON.stringify(cfg));
-    return (window._imgDomainCfg = cfg);
 }
 
 // Call this when menu data reloads to invalidate caches
@@ -7520,7 +7412,6 @@ export function clearImageUrlCache() {
     _imageUrlCache.clear();
     _menuItemsIndex = null;
     _fullItemsIndex = null;
-    sessionStorage.removeItem(IMAGE_URL_CACHE_KEY);
 }
 /**
 * Helper function to determine temperature from item name
@@ -9206,7 +9097,7 @@ GetHomeAPI.editItem = function (sno, item_no) {
     const editCallback = (chosenAddons, chosenRemarks) => {
         // ✅ Set BEFORE addToCart so it survives async operations
         window.currentEditingSno = sno;
-    
+
         addToCart(
             fullItemData.item_no,
             chosenAddons || [],
@@ -9214,7 +9105,7 @@ GetHomeAPI.editItem = function (sno, item_no) {
             sno,
             true
         );
-    
+
         // ✅ Re-set AFTER too as double guarantee
         window.currentEditingSno = sno;
     };

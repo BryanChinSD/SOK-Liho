@@ -544,6 +544,12 @@ async function handleGlobalCheckoutClick(e) {
             return;
         }
 
+        if (!order?.service_type || !orderType) {
+            window.isPaymentInProgress = false;
+            isCheckoutSubmittingLock = false;
+            return;
+        }
+
         // 4. Suppress Storage Thrashing Loops: Only fetch modes from API if memory and local storage are clean
         if (!_paymentModes && !localStorage.getItem(STORAGE_KEY_MODES)) {
             if (typeof fetchPaymentModes === 'function') {
@@ -854,44 +860,44 @@ window.confirmPartialAmount = async function (method, paymentType, isDirectPay, 
 };
 
 
-(function installBypass() {
-    // ── Save original ─────────────────────────────────────────────────────────
-    window._originalSelectAndPay = window.selectAndPay;
+//(function installBypass() {
+//    // ── Save original ─────────────────────────────────────────────────────────
+//    window._originalSelectAndPay = window.selectAndPay;
 
-    // ── Bypass ────────────────────────────────────────────────────────────────
-    window.selectAndPay = async function (method, paymentType, isDirectPay, terminalType, ref3) {
-        console.warn('🚧 BYPASS: intercepted selectAndPay', { method, paymentType, isDirectPay, terminalType, ref3, remainingAmount });
+//    // ── Bypass ────────────────────────────────────────────────────────────────
+//    window.selectAndPay = async function (method, paymentType, isDirectPay, terminalType, ref3) {
+//        console.warn('🚧 BYPASS: intercepted selectAndPay', { method, paymentType, isDirectPay, terminalType, ref3, remainingAmount });
 
-        // Close payment modal if open
-        const modal = document.getElementById('paymentMethodModal');
-        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
+//        // Close payment modal if open
+//        const modal = document.getElementById('paymentMethodModal');
+//        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
 
-        try {
-            showProcessingModal('💳', method, `Recording ${method} $${(remainingAmount || 0).toFixed(2)}...`);
+//        try {
+//            showProcessingModal('💳', method, `Recording ${method} $${(remainingAmount || 0).toFixed(2)}...`);
 
-            const fakeRefInfo = `BYPASS-${Date.now()}`;
-            await _recordTender(method, paymentType, remainingAmount, fakeRefInfo);
+//            const fakeRefInfo = `BYPASS-${Date.now()}`;
+//            await _recordTender(method, paymentType, remainingAmount, fakeRefInfo);
 
-            console.log('✅ BYPASS: recorded', { method, paymentType, remainingAmount });
-        } catch (err) {
-            console.error('❌ BYPASS failed:', err);
-            showPaymentError('Bypass failed: ' + err.message);
-        }
-    };
+//            console.log('✅ BYPASS: recorded', { method, paymentType, remainingAmount });
+//        } catch (err) {
+//            console.error('❌ BYPASS failed:', err);
+//            showPaymentError('Bypass failed: ' + err.message);
+//        }
+//    };
 
-    // ── Restore helper ────────────────────────────────────────────────────────
-    window.restorePayment = function () {
-        if (window._originalSelectAndPay) {
-            window.selectAndPay = window._originalSelectAndPay;
-            window._originalSelectAndPay = null;
-            console.log('✅ Original selectAndPay restored');
-        } else {
-            console.warn('⚠️ No original selectAndPay found to restore');
-        }
-    };
+//    // ── Restore helper ────────────────────────────────────────────────────────
+//    window.restorePayment = function () {
+//        if (window._originalSelectAndPay) {
+//            window.selectAndPay = window._originalSelectAndPay;
+//            window._originalSelectAndPay = null;
+//            console.log('✅ Original selectAndPay restored');
+//        } else {
+//            console.warn('⚠️ No original selectAndPay found to restore');
+//        }
+//    };
 
-    console.log('🚧 Bypass installed. Run window.restorePayment() to undo.');
-})();
+//    console.log('🚧 Bypass installed. Run window.restorePayment() to undo.');
+//})();
 
 
 
@@ -909,111 +915,111 @@ window.restorePayment = function () {
 //// =============================================================================
 
 
-//window.selectAndPay = async function (
-//    method,
-//    paymentType = null,
-//    isDirectPay = 1,
-//    terminalType = 'nets-credit',
-//    ref3 = ''
-//) {
-//    if (isPaymentInProgress) { console.warn('⚠️ Payment already in progress'); return; }
+window.selectAndPay = async function (
+    method,
+    paymentType = null,
+    isDirectPay = 1,
+    terminalType = 'nets-credit',
+    ref3 = ''
+) {
+    if (isPaymentInProgress) { console.warn('⚠️ Payment already in progress'); return; }
 
-//    isPaymentInProgress = true;
-//    selectedPaymentMethod = method;
+    isPaymentInProgress = true;
+    selectedPaymentMethod = method;
 
-//    try {
-//        if (!paymentType) {
-//            const resolved = resolvePaymentMode(method);
-//            paymentType = resolved.payment_type;
-//            terminalType = resolved.terminaltype || 'NONE';
-//        }
+    try {
+        if (!paymentType) {
+            const resolved = resolvePaymentMode(method);
+            paymentType = resolved.payment_type;
+            terminalType = resolved.terminaltype || 'NONE';
+        }
 
-//        console.log('💳 selectAndPay:', { method, paymentType, isDirectPay, terminalType, remainingAmount });
+        console.log('💳 selectAndPay:', { method, paymentType, isDirectPay, terminalType, remainingAmount });
 
-//        // Fetch state from localStorage for validation structures
-//        const memberData = JSON.parse(localStorage.getItem('memberInfo') || '{}');
-//        const appliedVoucher = JSON.parse(localStorage.getItem('appliedVoucher') || 'null');
-//        const voucherRef = appliedVoucher ? (appliedVoucher.voucher_code || appliedVoucher.id || 'FREE_VOUCHER') : 'NO_VOUCHER';
+        // Fetch state from localStorage for validation structures
+        const memberData = JSON.parse(localStorage.getItem('memberInfo') || '{}');
+        const appliedVoucher = JSON.parse(localStorage.getItem('appliedVoucher') || 'null');
+        const voucherRef = appliedVoucher ? (appliedVoucher.voucher_code || appliedVoucher.id || 'FREE_VOUCHER') : 'NO_VOUCHER';
 
-//        // =========================================================================
-//        // SCENARIO 1: 0 AMOUNT FREE ITEM VOUCHER
-//        // =========================================================================
-//        if (typeof remainingAmount !== 'undefined' && remainingAmount === 0) {
-//            console.log('🎁 Zero amount detected (Free item or 100% voucher offset).');
+        // =========================================================================
+        // SCENARIO 1: 0 AMOUNT FREE ITEM VOUCHER
+        // =========================================================================
+        if (typeof remainingAmount !== 'undefined' && remainingAmount === 0) {
+            console.log('🎁 Zero amount detected (Free item or 100% voucher offset).');
 
-//            const modal = document.getElementById('paymentMethodModal');
-//            if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
+            const modal = document.getElementById('paymentMethodModal');
+            if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
 
-//            // Force use of CRM Voucher mode ('M') to safely record a zero-dollar transaction
-//            await _processTender('CRM VOUCHER', 'M', isDirectPay, 'NONE', ref3, 0);
-//            return;
-//        }
+            // Force use of CRM Voucher mode ('M') to safely record a zero-dollar transaction
+            await _processTender('CRM VOUCHER', 'M', isDirectPay, 'NONE', ref3, 0);
+            return;
+        }
 
-//        // Catch true invalid/negative amounts 
-//        if (!remainingAmount || remainingAmount < 0) {
-//            showPaymentError('Invalid payment amount. Please try again.');
-//            return;
-//        }
+        // Catch true invalid/negative amounts 
+        if (!remainingAmount || remainingAmount < 0) {
+            showPaymentError('Invalid payment amount. Please try again.');
+            return;
+        }
 
-//        // =========================================================================
-//        // SCENARIO 2: CRM VOUCHER BYPASS (Normal Balance > $0)
-//        // =========================================================================
-//        if (method.toUpperCase() === 'CRM VOUCHER' || paymentType === 'M') {
-//            if (!memberData || !memberData.id) {
-//                showPaymentError('Please log in a member first to use CRM Voucher.');
-//                return;
-//            }
-//            if (!appliedVoucher) {
-//                showPaymentError('No valid voucher applied. Please select a voucher first.');
-//                return;
-//            }
+        // =========================================================================
+        // SCENARIO 2: CRM VOUCHER BYPASS (Normal Balance > $0)
+        // =========================================================================
+        if (method.toUpperCase() === 'CRM VOUCHER' || paymentType === 'M') {
+            if (!memberData || !memberData.id) {
+                showPaymentError('Please log in a member first to use CRM Voucher.');
+                return;
+            }
+            if (!appliedVoucher) {
+                showPaymentError('No valid voucher applied. Please select a voucher first.');
+                return;
+            }
 
-//            console.log('🎫 CRM Voucher validated. Bypassing external API gateway...');
+            console.log('🎫 CRM Voucher validated. Bypassing external API gateway...');
 
-//            const modal = document.getElementById('paymentMethodModal');
-//            if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
+            const modal = document.getElementById('paymentMethodModal');
+            if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
 
-//            // Send voucher reference code safely into the downstream process tender pipeline
-//            await _processTender(method, 'M', isDirectPay, 'NONE', voucherRef, remainingAmount);
-//            return;
-//        }
+            // Send voucher reference code safely into the downstream process tender pipeline
+            await _processTender(method, 'M', isDirectPay, 'NONE', voucherRef, remainingAmount);
+            return;
+        }
 
-//        // =========================================================================
-//        // SCENARIO 3: NORMAL PAYMENT TERMINAL FLOW
-//        // =========================================================================
-//        if (currentPaymentController) {
-//            try { currentPaymentController.abort(); } catch (e) { }
-//            currentPaymentController = null;
-//        }
+        // =========================================================================
+        // SCENARIO 3: NORMAL PAYMENT TERMINAL FLOW
+        // =========================================================================
+        if (currentPaymentController) {
+            try { currentPaymentController.abort(); } catch (e) { }
+            currentPaymentController = null;
+        }
 
-//        const modal = document.getElementById('paymentMethodModal');
-//        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
+        const modal = document.getElementById('paymentMethodModal');
+        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
 
-//        sendPaymentInitiatedNotification(method, remainingAmount);
+        sendPaymentInitiatedNotification(method, remainingAmount);
 
-//        // Card terminal and CRM points both skip the partial-amount prompt —
-//        // 'R' goes straight to terminal, 'P' opens the points panel directly.
-//        if (paymentType === 'R' || paymentType === 'P') {
-//            await _processTender(method, paymentType, isDirectPay, terminalType, ref3, remainingAmount);
-//            return;
-//        }
+        // Card terminal and CRM points both skip the partial-amount prompt —
+        // 'R' goes straight to terminal, 'P' opens the points panel directly.
+        if (paymentType === 'R' || paymentType === 'P') {
+            await _processTender(method, paymentType, isDirectPay, terminalType, ref3, remainingAmount);
+            return;
+        }
 
-//        promptPartialAmount(method, paymentType, isDirectPay, terminalType, ref3);
+        promptPartialAmount(method, paymentType, isDirectPay, terminalType, ref3);
 
-//    } catch (error) {
-//        console.error('❌ selectAndPay error:', error);
-//        if (error.name === 'AbortError') {
-//            showPaymentError('Payment request timed out. Please try again.');
-//            sendPaymentFailedNotification('Timeout', { error: 'AbortError' });
-//        } else {
-//            showPaymentError('Cannot reach payment terminal. Please check connection.');
-//            sendPaymentFailedNotification(error.message, { error: error.name });
-//        }
-//    } finally {
-//        isPaymentInProgress = false;
-//        currentPaymentController = null;
-//    }
-//};
+    } catch (error) {
+        console.error('❌ selectAndPay error:', error);
+        if (error.name === 'AbortError') {
+            showPaymentError('Payment request timed out. Please try again.');
+            sendPaymentFailedNotification('Timeout', { error: 'AbortError' });
+        } else {
+            showPaymentError('Cannot reach payment terminal. Please check connection.');
+            sendPaymentFailedNotification(error.message, { error: error.name });
+        }
+    } finally {
+        isPaymentInProgress = false;
+        currentPaymentController = null;
+    }
+};
 
 
 
@@ -1064,7 +1070,7 @@ async function _processTender(method, paymentType, isDirectPay, terminalType, re
             // ✅ _callCardTerminal already handled _recordTender internally
             // ✅ Just send the notification, don't call _recordTender again
             sendPaymentResponseReceivedNotification(result);
-            sendPaymentSuccessNotification(result);
+            //sendPaymentSuccessNotification(result);
             return;
         }
         throw new Error(`Unhandled payment type: ${paymentType}`);
@@ -1916,28 +1922,30 @@ async function completeOrderAfterPayment() {
                     }
                 }
 
+                // ✅ Send payment_success now that sales_no is known
+                sendWebSocketMessage({
+                    action: 'payment_success',
+                    deviceId: localStorage.getItem('sok_device_id'),
+                    orderId: orderSnapshot?.server_order_id || '',
+                    salesNo: sales_no,
+                    transactionId,
+                    amount: parseFloat(totalPaymentAmount) || 0,
+                    orderData: enrichedOrder
+                });
+
                 postAscentisSales({ cache, orderSnapshot, ledgerSnapshot, sales_no })
                     .catch(e => console.error('❌ Ascentis post error:', e));
 
                 notifyPaymentComplete({
-                    orderId: sales_no, sales_no,
+                    orderId: orderSnapshot?.server_order_id || '',  // ✅ FIX: ORD-..., not sales_no
+                    sales_no,
                     paymentMethod: paymentLabel,
                     totalAmount: finalizedTotal,
                     transactionId,
                     orderData: enrichedOrder
                 }).catch(e => console.warn('⚠️ notifyPaymentComplete error:', e.message));
 
-                sendWebSocketMessage({
-                    action: 'order_complete',
-                    deviceId: localStorage.getItem('sok_device_id'),
-                    tableNo: localStorage.getItem('tableNo'),
-                    salesNo: sales_no,
-                    paymentLedger: ledgerSnapshot,
-                    totalAmount: finalizedTotal,
-                    timestamp: new Date().toISOString()
-                });
-
-                // ── D. Printing — _resolvePrinting ALWAYS fires via finally ──
+                // ── D. Printing — _resolvePrinting ALWAYS fifres via finally ──
                 try {
                     const { kprintOrder, receiptRecord, receiptSalesDtls, kprintItems } = await getPrintData(sales_no);
                     console.log('📦 kprint:', kprintOrder?.sales_no, '| items:', kprintItems?.length ?? 0);
@@ -2644,7 +2652,7 @@ function normalizeBrand(raw) {
 function maskCard(cardRaw) {
     if (!cardRaw) return null;
     const digits = cardRaw.replace(/\u0000/g, '').replace(/\D/g, '');
-    const last4 = digits.length >= 4 ? digits.slice(-4) : digits;
+    const last4 = digits.length >= 4 ? digits.slice(-4) : digits
     return last4 ? `****${last4}` : null;
 }
 

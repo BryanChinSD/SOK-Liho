@@ -62,7 +62,7 @@ import {
 } from './GetHomeAPI.js';
 
 import { renderCartFromOrder, showErrorModal, closeErrorModal, showSuccessModal, closeModal } from './renderCartFromOrder.js';
-import { kitchenPrint, receiptPrint, labelPrint } from './Printing.js';
+import { kitchenPrint, receiptPrint,labelPrint } from '../js/Printing.js';
 import { KITCHEN_PRINT_TYPE, RECEIPT_PRINT_TYPE } from '../utils/constants.js';
 import { getNowInAPIFormat } from '../utils/common.js';
 
@@ -108,7 +108,7 @@ const PAYMENT_CONFIG = {
             ],
             apiNames: ['CREDIT CARD', 'VISA', 'Mastercard'],
             fallback: { payment_type: 'R', payment_name: 'CREDIT CARD', terminaltype: 'nets-credit', is_direct_pay: 0, ref_3: '' }
-            //    fallback: { payment_type: 'R', payment_name: 'CREDIT CARD', terminaltype: 'UOB', is_direct_pay: 0, ref_3: '' }
+        //    fallback: { payment_type: 'R', payment_name: 'CREDIT CARD', terminaltype: 'UOB', is_direct_pay: 0, ref_3: '' }
         },
         {
             enabled: true,
@@ -465,107 +465,51 @@ function _attachCheckoutHandler() {
 
     return true;
 }
-// A persistent component flag to isolate the execution thread
-let isCheckoutSubmittingLock = false;
 
 async function handleGlobalCheckoutClick(e) {
     const btn = e.target.closest('#checkout-btn');
     if (!btn) return;
-
     e.preventDefault();
     e.stopImmediatePropagation();
 
-    // 🛡️ CRITICAL LOOP GUARD: Instantly exit if checkout execution is currently active
-    if (isCheckoutSubmittingLock || window.isPaymentInProgress === true) {
-        console.warn('⚠️ Checkout action intercepted: Sequence is already processing.');
-        return;
-    }
-
-    // Set layout and threading blocks synchronously before ANY asynchronous awaits
-    isCheckoutSubmittingLock = true;
     window.isPaymentInProgress = true;
 
     try {
         const localStore = JSON.parse(localStorage.getItem("order") || '{}');
         const order = localStore?.state?.order;
 
-        // 1. Verify Cart Content
         if (!order?.sales_dtls?.length) {
-            console.warn('⚠️ Checkout blocked — Empty cart details.');
             window.isPaymentInProgress = false;
-            isCheckoutSubmittingLock = false;
             return;
         }
 
-        // 2. Verify Order Type Selection (Dine In / Takeaway)
+        // ✅ Block checkout if orderType is empty or not set
         const orderType = (localStorage.getItem('orderType') || '').trim();
         if (!orderType) {
             window.isPaymentInProgress = false;
-            isCheckoutSubmittingLock = false;
             console.warn('⚠️ Checkout blocked — orderType is empty');
-            if (typeof showToast === 'function') {
-                showToast('Please select Dine In or Takeaway before checkout.', 'warning', 'Order Type Required', 4000);
-            }
-            if (typeof showOrderTypeSelection === 'function') {
-                showOrderTypeSelection();
-            }
+            showToast('Please select Dine In or Takeaway before checkout.', 'warning', 'Order Type Required', 4000);
+            showOrderTypeSelection(); // bring back the selection screen
             return;
         }
 
-        // =========================================================================
-        // EXTRACT AMOUNT & VOUCHER INFORMATION DIRECTLY FROM ORDER STATE
-        // =========================================================================
+        if (typeof fetchPaymentModes === 'function') await fetchPaymentModes();
+
         const totalAmount = parseFloat(order.net_amt || 0);
-
-        // Check for voucher tracking codes in standalone local storage OR embedded in the active order payload
-        const appliedVoucher = JSON.parse(localStorage.getItem('appliedVoucher') || 'null');
-        const hasOrderVoucher = order.voucher_code && order.voucher_code.trim() !== "";
-        const voucherCode = hasOrderVoucher ? order.voucher_code : (appliedVoucher?.voucher_code || '');
-
-        // Scan items or summary properties for active promotional discount values
-        const hasItemLevelPromotion = order.sales_dtls?.some(item => parseFloat(item.disc_amt) > 0 || item.disc_type === 'P');
-        const hasOrderLevelDiscount = parseFloat(order.total_disc || 0) > 0;
-
-        // 3. Verify Order Amount and Promotion Balance Validity
-        if (totalAmount === 0 && (hasOrderVoucher || appliedVoucher || hasItemLevelPromotion || hasOrderLevelDiscount)) {
-            console.log(`🎁 Zero-dollar checkout authorized via applied promotion/voucher workflow. Code: ${voucherCode}`);
-
-            // Sync voucher data back to local storage if it only existed in the order state tree
-            if (hasOrderVoucher && !appliedVoucher) {
-                localStorage.setItem('appliedVoucher', JSON.stringify({
-                    voucher_code: order.voucher_code,
-                    voucher_name: order.voucher_name || 'Free Item Promotion'
-                }));
-            }
-        } else if (totalAmount <= 0) {
+        if (totalAmount <= 0) {
             window.isPaymentInProgress = false;
-            isCheckoutSubmittingLock = false;
-            console.warn('⚠️ Checkout blocked — net total amount is 0 or negative without an active promotion.');
             return;
         }
 
-        // 4. Suppress Storage Thrashing Loops: Only fetch modes from API if memory and local storage are clean
-        if (!_paymentModes && !localStorage.getItem(STORAGE_KEY_MODES)) {
-            if (typeof fetchPaymentModes === 'function') {
-                await fetchPaymentModes();
-            }
-        }
-
-        // 5. Fire Modal Layer Layout Engine
         if (typeof openPaymentModal === 'function') {
-            await openPaymentModal(totalAmount);
+            openPaymentModal(totalAmount);
         }
 
     } catch (err) {
-        console.error('❌ Checkout delegation error:', err);
-        // Clear safety flags on exception so components don't freeze indefinitely
         window.isPaymentInProgress = false;
-    } finally {
-        // Always release the click-event execution lock cleanly
-        isCheckoutSubmittingLock = false;
+        console.error('❌ Checkout delegation error:', err);
     }
 }
-
 document.addEventListener('DOMContentLoaded', async function () {
     fetchPaymentModes()
         .then(() => console.log('✅ Payment modes ready'))
@@ -597,29 +541,24 @@ document.addEventListener('DOMContentLoaded', async function () {
 // =============================================================================
 // OPEN / RENDER / CLOSE MODAL
 // =============================================================================
+
 window.openPaymentModal = async function (amount) {
     console.log('🔓 openPaymentModal called with:', amount);
     const parsedAmount = parseFloat(amount);
-
-    if (isNaN(parsedAmount) || parsedAmount < 0) {
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
         console.error('❌ Invalid amount:', amount);
-        window.isPaymentInProgress = false;
         return;
     }
 
+    // 🛡️ Block WS sync from wiping the cart while payment modal is open
     window.isPaymentInProgress = true;
+
     totalPaymentAmount = parsedAmount;
     remainingAmount = parsedAmount;
     paymentLedger = [];
-
-    if (!_paymentModes) {
-        await fetchPaymentModes();
-    }
-
-    // Just render the modal frame and stop—let the user click confirm!
+    await fetchPaymentModes();
     _renderPaymentModal();
 };
-
 function _renderPaymentModal() {
     const modal = document.getElementById('paymentMethodModal');
     if (!modal) { console.error('❌ paymentMethodModal not found'); return; }
@@ -630,53 +569,6 @@ function _renderPaymentModal() {
     const container = document.getElementById('paymentMethodsContainer');
     if (!container) { console.error('❌ paymentMethodsContainer not found'); return; }
 
-    // =========================================================================
-    // CONDITION: $0 FREE ITEM / FULLY DISCOUNTED VOUCHER CONFIRMATION SCREEN
-    // =========================================================================
-    if (typeof remainingAmount !== 'undefined' && remainingAmount === 0) {
-        // Retrieve the voucher data payload to extract the descriptive text name
-        const appliedVoucher = JSON.parse(localStorage.getItem('appliedVoucher') || 'null');
-        const voucherDisplayName = appliedVoucher?.voucher_name || 'Free Item Promotion';
-
-        container.innerHTML = `
-            <div class="payment-methods-label">Order Confirmation</div>
-            <div class="payment-methods-container" style="display: block; width: 100%;">
-                <div style="text-align: center; padding: 30px 20px; width: 100%; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
-                    <div style="font-size: 48px; margin-bottom: 10px;">🎁</div>
-                    
-                    <!-- Dynamically Rendered Voucher Title Profile -->
-                    <div style="background: #f1f5f9; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; border: 1px dashed #cbd5e1;">
-                        <span style="display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; margin-bottom: 4px;">Applied Voucher</span>
-                        <span style="font-size: 16px; font-weight: 700; color: #0f172a; display: block; line-height: 1.4;">
-                            ${voucherDisplayName}
-                        </span>
-                    </div>
-
-                    <p style="color: #64748b; font-size: 15px; margin-bottom: 24px; line-height: 1.5;">
-                        Your promo has fully covered this order balance. Click below to finalize your order.
-                    </p>
-                    
-                    <button id="confirm-free-order-btn" 
-                            onclick="handleFreeOrderConfirmation(this)"
-                            style="width: 100%; background: #22c55e; color: white; border: none; padding: 16px; font-size: 18px; font-weight: 700; border-radius: 12px; cursor: pointer; transition: background 0.2s; box-shadow: 0 4px 6px -1px rgba(34, 197, 94, 0.2);">
-                        CONFIRM FREE ORDER
-                    </button>
-                </div>
-            </div>
-        `;
-
-        modal.style.display = 'flex';
-        modal.classList.add('show');
-        document.body.style.overflow = 'hidden';
-
-        console.log(`✅ Payment modal confirmation view rendered for: ${voucherDisplayName}`);
-        sendPaymentModalNotification('payment_modal_opened', remainingAmount);
-        return;
-    }
-
-    // =========================================================================
-    // STANDARD RENDER FLOW (> $0)
-    // =========================================================================
     const ledgerHtml = (PAYMENT_CONFIG.splitPayment && paymentLedger.length > 0) ? `
         <div class="payment-ledger mb-3 p-2"
              style="background:#f8f9fa; border-radius:8px; font-size:13px; border:1px solid #dee2e6;">
@@ -703,8 +595,14 @@ function _renderPaymentModal() {
 
     const cardsHtml = activeEntries.map(entry => {
         const mode = resolveConfigEntry(entry);
-        const brandsHtml = entry.brands.length ? `<div class="payment-card-brands">${entry.brands.map(b => _buildBrandImg(b)).join('')}</div>` : '';
+
+        const brandsHtml = entry.brands.length
+            ? `<div class="payment-card-brands">${entry.brands.map(b => _buildBrandImg(b)).join('')}</div>`
+            : '';
+
         const iconHtml = entry.icon ? `<span class="payment-icon-large">${entry.icon}</span>` : '';
+
+        // ✅ Use double quotes inside the onclick to avoid breaking the template literal
         const terminaltype = mode.terminaltype ?? entry.fallback.terminaltype;
         const ref3 = mode.ref_3 ?? entry.fallback.ref_3 ?? '';
 
@@ -736,26 +634,6 @@ function _renderPaymentModal() {
     console.log(`✅ Payment modal rendered | $${remainingAmount} remaining | ${activeEntries.length} methods`);
     sendPaymentModalNotification('payment_modal_opened', remainingAmount);
 }
-
-async function handleFreeOrderConfirmation(buttonElement) {
-    if (!buttonElement) return;
-    buttonElement.disabled = true;
-    buttonElement.style.background = '#86efac';
-    buttonElement.innerHTML = `
-        <span style="display: inline-block; width: 1.2rem; height: 1.2rem; border: 0.2em solid white; border-right-color: transparent; border-radius: 50%; animation: button-spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle;"></span>
-        Processing...
-        <style>@keyframes button-spin { to { transform: rotate(360deg); } }</style>
-    `;
-    try {
-        console.log('🚀 User confirmed free order interaction. Processing tender...');
-        await window.selectAndPay('CRM VOUCHER', 'M', 1, 'NONE', '');
-    } catch (err) {
-        console.error('❌ Free voucher confirmation execution error:', err);
-        window.isPaymentInProgress = false;
-        _renderPaymentModal();
-    }
-}
-window.handleFreeOrderConfirmation = handleFreeOrderConfirmation;
 
 window.removeLedgerEntry = function (index) {
     const removed = paymentLedger.splice(index, 1)[0];
@@ -854,169 +732,105 @@ window.confirmPartialAmount = async function (method, paymentType, isDirectPay, 
 };
 
 
-(function installBypass() {
-    // ── Save original ─────────────────────────────────────────────────────────
-    window._originalSelectAndPay = window.selectAndPay;
+//(function installBypass() {
+//    window._originalSelectAndPay = window.selectAndPay;
 
-    // ── Bypass ────────────────────────────────────────────────────────────────
-    window.selectAndPay = async function (method, paymentType, isDirectPay, terminalType, ref3) {
-        console.warn('🚧 BYPASS: intercepted selectAndPay', { method, paymentType, isDirectPay, terminalType, ref3, remainingAmount });
-
-        // Close payment modal if open
-        const modal = document.getElementById('paymentMethodModal');
-        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
-
-        try {
-            showProcessingModal('💳', method, `Recording ${method} $${(remainingAmount || 0).toFixed(2)}...`);
-
-            const fakeRefInfo = `BYPASS-${Date.now()}`;
-            await _recordTender(method, paymentType, remainingAmount, fakeRefInfo);
-
-            console.log('✅ BYPASS: recorded', { method, paymentType, remainingAmount });
-        } catch (err) {
-            console.error('❌ BYPASS failed:', err);
-            showPaymentError('Bypass failed: ' + err.message);
-        }
-    };
-
-    // ── Restore helper ────────────────────────────────────────────────────────
-    window.restorePayment = function () {
-        if (window._originalSelectAndPay) {
-            window.selectAndPay = window._originalSelectAndPay;
-            window._originalSelectAndPay = null;
-            console.log('✅ Original selectAndPay restored');
-        } else {
-            console.warn('⚠️ No original selectAndPay found to restore');
-        }
-    };
-
-    console.log('🚧 Bypass installed. Run window.restorePayment() to undo.');
-})();
-
-
-
-window.restorePayment = function () {
-    if (window._originalSelectAndPay) {
-        window.selectAndPay = window._originalSelectAndPay;
-        console.log('✅ selectAndPay restored.');
-    }
-};
-
-
-
-//// =============================================================================
-//// SELECT AND PAY
-//// =============================================================================
-
-
-//window.selectAndPay = async function (
-//    method,
-//    paymentType = null,
-//    isDirectPay = 1,
-//    terminalType = 'nets-credit',
-//    ref3 = ''
-//) {
-//    if (isPaymentInProgress) { console.warn('⚠️ Payment already in progress'); return; }
-
-//    isPaymentInProgress = true;
-//    selectedPaymentMethod = method;
-
-//    try {
-//        if (!paymentType) {
-//            const resolved = resolvePaymentMode(method);
-//            paymentType = resolved.payment_type;
-//            terminalType = resolved.terminaltype || 'NONE';
-//        }
-
-//        console.log('💳 selectAndPay:', { method, paymentType, isDirectPay, terminalType, remainingAmount });
-
-//        // Fetch state from localStorage for validation structures
-//        const memberData = JSON.parse(localStorage.getItem('memberInfo') || '{}');
-//        const appliedVoucher = JSON.parse(localStorage.getItem('appliedVoucher') || 'null');
-//        const voucherRef = appliedVoucher ? (appliedVoucher.voucher_code || appliedVoucher.id || 'FREE_VOUCHER') : 'NO_VOUCHER';
-
-//        // =========================================================================
-//        // SCENARIO 1: 0 AMOUNT FREE ITEM VOUCHER
-//        // =========================================================================
-//        if (typeof remainingAmount !== 'undefined' && remainingAmount === 0) {
-//            console.log('🎁 Zero amount detected (Free item or 100% voucher offset).');
-
-//            const modal = document.getElementById('paymentMethodModal');
-//            if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
-
-//            // Force use of CRM Voucher mode ('M') to safely record a zero-dollar transaction
-//            await _processTender('CRM VOUCHER', 'M', isDirectPay, 'NONE', ref3, 0);
-//            return;
-//        }
-
-//        // Catch true invalid/negative amounts 
-//        if (!remainingAmount || remainingAmount < 0) {
-//            showPaymentError('Invalid payment amount. Please try again.');
-//            return;
-//        }
-
-//        // =========================================================================
-//        // SCENARIO 2: CRM VOUCHER BYPASS (Normal Balance > $0)
-//        // =========================================================================
-//        if (method.toUpperCase() === 'CRM VOUCHER' || paymentType === 'M') {
-//            if (!memberData || !memberData.id) {
-//                showPaymentError('Please log in a member first to use CRM Voucher.');
-//                return;
-//            }
-//            if (!appliedVoucher) {
-//                showPaymentError('No valid voucher applied. Please select a voucher first.');
-//                return;
-//            }
-
-//            console.log('🎫 CRM Voucher validated. Bypassing external API gateway...');
-
-//            const modal = document.getElementById('paymentMethodModal');
-//            if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
-
-//            // Send voucher reference code safely into the downstream process tender pipeline
-//            await _processTender(method, 'M', isDirectPay, 'NONE', voucherRef, remainingAmount);
-//            return;
-//        }
-
-//        // =========================================================================
-//        // SCENARIO 3: NORMAL PAYMENT TERMINAL FLOW
-//        // =========================================================================
-//        if (currentPaymentController) {
-//            try { currentPaymentController.abort(); } catch (e) { }
-//            currentPaymentController = null;
-//        }
+//    window.selectAndPay = async function (method, paymentType, isDirectPay, terminalType, ref3) {
+//        console.warn('🚧 BYPASS: intercepted selectAndPay', { method, paymentType, remainingAmount });
 
 //        const modal = document.getElementById('paymentMethodModal');
 //        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
 
-//        sendPaymentInitiatedNotification(method, remainingAmount);
-
-//        // Card terminal and CRM points both skip the partial-amount prompt —
-//        // 'R' goes straight to terminal, 'P' opens the points panel directly.
-//        if (paymentType === 'R' || paymentType === 'P') {
-//            await _processTender(method, paymentType, isDirectPay, terminalType, ref3, remainingAmount);
-//            return;
+//        try {
+//            showProcessingModal('💳', 'NETS Bypass', `Recording NETS $${remainingAmount}...`);
+//            await _recordTender('NETS', 'R', remainingAmount, 'NETS');
+//            console.log('✅ Bypass: NETS recorded for', remainingAmount);
+//        } catch (err) {
+//            console.error('❌ Bypass failed:', err);
+//            showPaymentError('Bypass failed: ' + err.message);
 //        }
+//    };
 
-//        promptPartialAmount(method, paymentType, isDirectPay, terminalType, ref3);
+//    console.log('🚧 NETS Bypass installed. Run window.restorePayment() to undo.');
+//})();
 
-//    } catch (error) {
-//        console.error('❌ selectAndPay error:', error);
-//        if (error.name === 'AbortError') {
-//            showPaymentError('Payment request timed out. Please try again.');
-//            sendPaymentFailedNotification('Timeout', { error: 'AbortError' });
-//        } else {
-//            showPaymentError('Cannot reach payment terminal. Please check connection.');
-//            sendPaymentFailedNotification(error.message, { error: error.name });
-//        }
-//    } finally {
-//        isPaymentInProgress = false;
-//        currentPaymentController = null;
+//window.restorePayment = function () {
+//    if (window._originalSelectAndPay) {
+//        window.selectAndPay = window._originalSelectAndPay;
+//        console.log('✅ selectAndPay restored.');
 //    }
 //};
 
 
 
+////// =============================================================================
+////// SELECT AND PAY
+////// =============================================================================
+
+window.selectAndPay = async function (
+    method,
+    paymentType = null,
+    isDirectPay = 1,
+    terminalType = 'nets-credit',
+    ref3 = ''
+) {
+    if (isPaymentInProgress) { console.warn('⚠️ Payment already in progress'); return; }
+
+    isPaymentInProgress = true;
+    selectedPaymentMethod = method;
+
+    try {
+        if (!paymentType) {
+            const resolved = resolvePaymentMode(method);
+            paymentType = resolved.payment_type;
+            terminalType = resolved.terminaltype || 'NONE';
+        }
+
+        console.log('💳 selectAndPay:', { method, paymentType, isDirectPay, terminalType, remainingAmount });
+
+        if (!remainingAmount || remainingAmount <= 0) {
+            showPaymentError('Invalid payment amount. Please try again.');
+            return;
+        }
+
+        if (currentPaymentController) {
+            try { currentPaymentController.abort(); } catch (e) { }
+            currentPaymentController = null;
+        }
+
+        const modal = document.getElementById('paymentMethodModal');
+        if (modal) { modal.classList.remove('show'); modal.style.display = 'none'; document.body.style.overflow = ''; }
+
+        sendPaymentInitiatedNotification(method, remainingAmount);
+
+        // Card terminal and CRM points both skip the partial-amount prompt —
+        // 'R' goes straight to terminal, 'P' opens the points panel directly.
+        if (paymentType === 'R' || paymentType === 'P') {
+            await _processTender(method, paymentType, isDirectPay, terminalType, ref3, remainingAmount);
+            return;
+        }
+
+        promptPartialAmount(method, paymentType, isDirectPay, terminalType, ref3);
+
+    } catch (error) {
+        console.error('❌ selectAndPay error:', error);
+        if (error.name === 'AbortError') {
+            showPaymentError('Payment request timed out. Please try again.');
+            sendPaymentFailedNotification('Timeout', { error: 'AbortError' });
+        } else {
+            showPaymentError('Cannot reach payment terminal. Please check connection.');
+            sendPaymentFailedNotification(error.message, { error: error.name });
+        }
+    } finally {
+        isPaymentInProgress = false;
+        currentPaymentController = null;
+    }
+};
+
+
+// =============================================================================
+// PROCESS TENDER
+// =============================================================================
 
 async function _processTender(method, paymentType, isDirectPay, terminalType, ref3, tenderAmt) {
     console.log(`💳 _processTender: ${method} | type:${paymentType} | amt:${tenderAmt}`);
@@ -1078,16 +892,17 @@ async function _processTender(method, paymentType, isDirectPay, terminalType, re
 // =============================================================================
 // RECORD TENDER → LEDGER
 // =============================================================================
+
 async function _recordTender(method, type, amount, refInfo, terminalData = null) {
     const tender = {
         payment_type: type,
-        payment_name: method,
+        payment_name: method,                                    // "MASTER"
         s_no: paymentLedger.length + 1,
         tender_amt: parseFloat(amount).toFixed(2),
         ref_info: [
             refInfo || terminalData?.approval_code || terminalData?.rrn || '',
-            terminalData?.card_number || ''
-        ].filter(Boolean).join(' '),
+            terminalData?.card_number || ''                      // ✅ "****8784"
+        ].filter(Boolean).join(' '),                             // "260331064944 ****8784"
         currency_name: '',
         exch_rate: '1',
         currency_amount: '0.00',
@@ -1095,9 +910,7 @@ async function _recordTender(method, type, amount, refInfo, terminalData = null)
             card_number: terminalData.card_number || '',
             response_desc: 'APPROVED',
             display: terminalData.display_name || terminalData.display || method
-        } : null,
-        // [ADDED] Carry terminal info through to receipt PDF printing
-        sales_other_info: terminalData?.sales_other_info || []
+        } : null
     };
     paymentLedger.push(tender);
     remainingAmount = parseFloat((remainingAmount - amount).toFixed(2));
@@ -1107,7 +920,6 @@ async function _recordTender(method, type, amount, refInfo, terminalData = null)
         _renderPaymentModal();
     }
 }
-window._recordTender = _recordTender;
 
 async function completeOrder() {
     showProcessingModal('📝', 'Finalizing Order', 'Saving to system...');
@@ -1157,6 +969,7 @@ async function completeOrder() {
 // =============================================================================
 // CARD TERMINAL
 // =============================================================================
+
 async function _callCardTerminal(method, amount, terminalType) {
     window.isPaymentInProgress = true;
     showProcessingModal('💳', 'Processing Card Payment', 'Please present your card to the terminal');
@@ -1176,7 +989,7 @@ async function _callCardTerminal(method, amount, terminalType) {
 
     sendTerminalCheckStartedNotification(activeMethod, amount);
     currentPaymentController = new AbortController();
-    const timeoutId = setTimeout(() => currentPaymentController.abort(), 120000);
+    const timeoutId = setTimeout(() => currentPaymentController.abort(), 120000); // 120s — give terminal enough time
 
     try {
         const response = await fetch(apiEndpoint, {
@@ -1190,6 +1003,7 @@ async function _callCardTerminal(method, amount, terminalType) {
         });
         clearTimeout(timeoutId);
 
+        // Always parse body first — needed to extract terminal error message on failure
         const result = await response.json();
 
         if (!response.ok) {
@@ -1199,7 +1013,8 @@ async function _callCardTerminal(method, amount, terminalType) {
                 terminalData?.ResponseDesc ||
                 terminalData?.responseDesc ||
                 terminalData?.ResponceInfo ||
-                result?.message || '';
+                result?.message ||
+                '';
 
             let userMessage;
             if (responseCode === 'NA' || rawMessage.includes('Transaction Not Available')) {
@@ -1217,7 +1032,7 @@ async function _callCardTerminal(method, amount, terminalType) {
             throw new Error(userMessage);
         }
 
-        const hwData = result.Result || result.result || result;
+        const hwData = result.result || result;
         const isSuccessful =
             hwData.responseCode === "00" ||
             hwData.ResponceCode === "00" ||
@@ -1226,20 +1041,7 @@ async function _callCardTerminal(method, amount, terminalType) {
         if (isSuccessful) {
             const parsedData = parseTerminalResponse(hwData);
 
-            // [ADDED] Normalize and attach salesOtherInfo from API response
-            // API returns camelCase (infoName/infoValue), receipt lookup expects snake_case (info_name/info_value)
-            var salesOtherInfo = result.salesOtherInfo || result.SalesOtherInfo || [];
-            if (salesOtherInfo && salesOtherInfo.length > 0) {
-                parsedData.sales_other_info = salesOtherInfo.map(function (oi) {
-                    return {
-                        info_name: oi.info_name || oi.infoName || '',
-                        info_value: oi.info_value || oi.infoValue || ''
-                    };
-                });
-                console.log('💳 salesOtherInfo attached:', parsedData.sales_other_info);
-            }
-
-            // NETS — always record as NETS
+            // ✅ NETS — always record as NETS, skip brand resolution entirely
             if (terminalType === 'NETS') {
                 sendPaymentResponseReceivedNotification(hwData);
                 await _recordTender('NETS', 'R', amount, parsedData.ref_info, parsedData);
@@ -1262,6 +1064,7 @@ async function _callCardTerminal(method, amount, terminalType) {
             return parsedData;
 
         } else {
+            // Declined — response was 200 OK but ResponseCode != "00"
             const declineReason =
                 hwData?.ResponseDesc ||
                 hwData?.responseDesc ||
@@ -1294,7 +1097,7 @@ async function _callCardTerminal(method, amount, terminalType) {
         console.warn(`⚠️ [${terminalType}] ${title}: ${fetchErr.message}`);
 
         hideProcessingModal();
-        showAlertModal('❌', title, userMessage);
+        showAlertModal('❌', title, userMessage); // replace with your actual modal function
 
         window.paymentCancelled = true;
         window.cancelPayment();
@@ -1304,36 +1107,36 @@ async function _callCardTerminal(method, amount, terminalType) {
 
 
 function parseTerminalResponse(result) {
-    // ✅ Strip all ASCII control characters from a raw terminal field
-    const sanitize = (val) => (val || '').replace(/[\x00-\x1F]/g, '').trim();
-
     // --- Raw extractions ---
-    const cardNumberRaw = sanitize(result.cardNumber_Raw || result.pan || result.Pan || '');
-    const issuerRaw = sanitize(result.issuerName_Raw || result.cardLabel || result.CardLabel || '');
-    const approvalCode = sanitize(result.approvalCode_Raw?.split('\u0000').pop() || '');
+    const cardNumberRaw = result.cardNumber_Raw || result.pan || result.Pan || '';
+    const issuerRaw = result.issuerName_Raw || result.cardLabel || result.CardLabel || '';
+    const approvalCode = result.approvalCode_Raw?.split('\u0000').pop()?.trim() || '';
     const ecn = result.ecn || result.s_ECN || result.r_ECN || '';
-    const rrn = sanitize(result.rrN_Raw?.split('\u0000').pop() || '');
-    const invoiceNo = sanitize(result.invoiceNumber_Raw?.split('\u0000').pop() || '');
-    const terminalId = sanitize(result.terminalID_Raw?.split('\u0000').pop() || '');
-    const merchantId = sanitize(result.merchantID_Raw?.split('\u0000').pop() || '');
-    const batchNo = sanitize(result.batchNumber_Raw?.split('\u0000').pop() || '');
-    const txnDate = sanitize(result.transactionDate_Raw?.split('\u0000').pop() || '');
-    const txnTime = sanitize(result.transactionTime_Raw?.split('\u0000').pop() || '');
+    const rrn = result.rrN_Raw?.split('\u0000').pop()?.trim() || '';
+    const invoiceNo = result.invoiceNumber_Raw?.split('\u0000').pop()?.trim() || '';
+    const terminalId = result.terminalID_Raw?.split('\u0000').pop()?.trim() || '';
+    const merchantId = result.merchantID_Raw?.split('\u0000').pop()?.trim() || '';
+    const batchNo = result.batchNumber_Raw?.split('\u0000').pop()?.trim() || '';
+    const txnDate = result.transactionDate_Raw?.split('\u0000').pop()?.trim() || '';
+    const txnTime = result.transactionTime_Raw?.split('\u0000').pop()?.trim() || '';
     const gateway = result.terminaL_TYPE || '';
     const responseDesc = result.responseDesc || result.responseCode || '';
 
     // --- Brand + Mask ---
+    // Priority: payment.PaymentName (set by backend) → issuerRaw → fallback
     const brandSource = result.paymentName || result.PaymentName || issuerRaw || '';
     const brand = normalizeBrand(brandSource) || 'CARD';
     const masked = maskCard(cardNumberRaw);
+
+    // e.g. "VISA ****1234"  or just "VISA" if no card number available
     const displayName = masked ? `${brand} ${masked}` : brand;
-    console.log('🔌 parseTerminalResponse input:', JSON.stringify(result, null, 2));
+
     return {
-        ref_info: masked || approvalCode || rrn || invoiceNo || '',
+        ref_info: approvalCode || rrn || invoiceNo || '',  // ✅ no more "Q"
         ecn, rrn,
         approval_code: approvalCode,
         invoice_no: invoiceNo,
-        card_number: '',
+        card_number: masked || cardNumberRaw,
         card_issuer: brand,
         card_type: result.cardType_Raw || brand,
         payment_name: displayName,
@@ -1820,15 +1623,18 @@ window.confirmVoucher = async function (method, paymentAmount) {
     }
 };
 
+
 async function completeOrderAfterPayment() {
     console.log('🎉 Completing order. Ledger:', paymentLedger);
     try {
+        // ── 🔒 SNAPSHOT ALL MUTABLE STATE FIRST (before any await or reset) ──
         const { order } = useOrder();
         const orderSnapshot = order ? JSON.parse(JSON.stringify(order)) : null;
         const crmCfgSnapshot = _crmCfg ? { ..._crmCfg } : null;
         const ledgerSnapshot = paymentLedger.map(p => ({ ...p }));
         sendOrderSubmittingNotification();
 
+        // ── 1. Build payment details ─────────────────────────────────────────
         const salesPaymentDtls = ledgerSnapshot.map((p, i) => ({
             PaymentCode: p.PaymentCode || p.payment_name,
             PaymentAmt: parseFloat(p.PaymentAmt || p.tender_amt) || 0,
@@ -1838,6 +1644,7 @@ async function completeOrderAfterPayment() {
             RefInfo: p.ref_info || '',
         }));
 
+        // ── 2. Post order → get SAL number ───────────────────────────────────
         const result = await postOrder({
             orderSnapshot,
             paymentName: ledgerSnapshot.map(p => p.payment_name).join('+'),
@@ -1861,6 +1668,7 @@ async function completeOrderAfterPayment() {
         const transactionId = ledgerSnapshot.map(p => p.ref_info).filter(Boolean).join(',');
         const paymentLabel = ledgerSnapshot.map(p => p.payment_name).join(' + ');
 
+        // ── 3. Build enriched order object ───────────────────────────────────
         const enrichedOrder = orderSnapshot ? {
             ...orderSnapshot,
             sales_no,
@@ -1872,17 +1680,13 @@ async function completeOrderAfterPayment() {
             SalesPaymentDtls: salesPaymentDtls
         } : null;
 
+        // ── 4. UI Transition: Show success IMMEDIATELY ───────────────────────
         const processingModal = document.getElementById('paymentProcessingModal');
         if (processingModal) {
             processingModal.classList.remove('show');
             processingModal.style.display = 'none';
         }
 
-        // ── [FIX 1] DECLARE printingDone BEFORE showSuccessModal ─────────────
-        let _resolvePrinting;
-        const printingDone = new Promise(resolve => { _resolvePrinting = resolve; });
-
-        // ── [FIX 2] PASS printingDone INTO showSuccessModal ──────────────────
         showSuccessModal({
             sales_no,
             orderData: enrichedOrder,
@@ -1890,11 +1694,11 @@ async function completeOrderAfterPayment() {
             paymentMethod: paymentLabel,
             paymentAmount: totalPaymentAmount,
             paymentLedger: ledgerSnapshot,
-            transactionId,
-            printingDone  // ← REQUIRED for modal to wait
+            transactionId
         });
 
-        const finalizedTotal = totalPaymentAmount;
+        // ── 5. Reset global payment state ────────────────────────────────────
+        const finalizedTotal = totalPaymentAmount; // Local copy for bg tasks
         selectedPaymentMethod = '';
         totalPaymentAmount = 0;
         remainingAmount = 0;
@@ -1903,24 +1707,39 @@ async function completeOrderAfterPayment() {
         _crmCfg = null;
         console.log('✅ Payment state reset. Proceeding with background tasks...');
 
+        // ─────────────────────────────────────────────────────────────────────
+        // FIRE-AND-FORGET BACKGROUND TASKS
+        // ─────────────────────────────────────────────────────────────────────
         (async () => {
             try {
                 const cache = useCache();
 
+                // ── A. WARM BOOT RE-HYDRATION ─────────────────────────────────
                 if (!cache.printerSettings || cache.printerSettings.length === 0) {
                     const localPrinters = localStorage.getItem('storeKitchenPrinters');
                     if (localPrinters) {
                         const parsed = JSON.parse(localPrinters);
-                        console.log("🛠️ [Warm Boot] Hydrating:", parsed.length);
+                        console.log("🛠️ [Warm Boot] Hydrating cache from localStorage:", parsed.length);
                         cache.setPrinterSettings(parsed);
                     }
                 }
 
-                postAscentisSales({ cache, orderSnapshot, ledgerSnapshot, sales_no })
-                    .catch(e => console.error('❌ Ascentis post error:', e));
+                // ── B. Ascentis CRM Sales Post (REFRACTORED) ─────────────────────────
+                try {
+                    await postAscentisSales({
+                        cache,
+                        orderSnapshot,
+                        ledgerSnapshot,
+                        sales_no
+                    });
+                } catch (e) {
+                    console.error('❌ Ascentis post error:', e);
+                }
 
+                // ── C. System Notifications ───────────────────────────────────
                 notifyPaymentComplete({
-                    orderId: sales_no, sales_no,
+                    orderId: sales_no,
+                    sales_no,
                     paymentMethod: paymentLabel,
                     totalAmount: finalizedTotal,
                     transactionId,
@@ -1937,33 +1756,39 @@ async function completeOrderAfterPayment() {
                     timestamp: new Date().toISOString()
                 });
 
-                // ── D. Printing — _resolvePrinting ALWAYS fires via finally ──
+                // ── D. Printing Operations ────────────────────────────────────
                 try {
                     const { kprintOrder, receiptRecord, receiptSalesDtls, kprintItems } = await getPrintData(sales_no);
-                    console.log('📦 kprint:', kprintOrder?.sales_no, '| items:', kprintItems?.length ?? 0);
+                    console.log('📦 kprint order:', kprintOrder?.sales_no, '| items:', kprintItems?.length ?? 0);
                     console.log('📦 receipt items:', receiptSalesDtls?.length);
+                    console.log('📦 label items:', receiptSalesDtls?.length ?? 0);
 
                     // 1. Receipt
                     const receiptOrder = {
                         ...(enrichedOrder ?? {}),
                         ...(receiptRecord ?? {}),
                         sales_dtls: receiptSalesDtls?.length > 0
-                            ? receiptSalesDtls : (enrichedOrder?.sales_dtls ?? []),
+                            ? receiptSalesDtls
+                            : (enrichedOrder?.sales_dtls ?? []),
                         sales_service_dtls: receiptRecord?.sales_service_dtls?.length > 0
-                            ? receiptRecord.sales_service_dtls : (enrichedOrder?.sales_service_dtls ?? []),
+                            ? receiptRecord.sales_service_dtls
+                            : (enrichedOrder?.sales_service_dtls ?? []),
                         sales_payment_dtls: enrichedOrder?.sales_payment_dtls?.length > 0
-                            ? enrichedOrder.sales_payment_dtls : (receiptRecord?.sales_payment_dtls ?? [])
+                            ? enrichedOrder.sales_payment_dtls
+                            : (receiptRecord?.sales_payment_dtls ?? [])
                     };
+
+                    console.log('🧾 [RECEIPT] Firing... items:', receiptOrder.sales_dtls?.length);
                     try {
                         const p = await receiptPrint('RECEIPT', [receiptOrder], '0', 'R1');
-                        if (p?.catch) p.catch(e => console.error('❌ [RECEIPT] failed:', e));
+                        if (p?.catch) p.catch(e => console.error('❌ [RECEIPT] Print failed:', e));
                     } catch (err) {
                         console.error('❌ [RECEIPT] Execution error:', err);
                     }
 
                     // 2. Kitchen
                     if (!kprintOrder || !kprintItems?.length) {
-                        console.warn('⚠️ [KITCHEN] No items — skipping');
+                        console.warn('⚠️ [KITCHEN] No items found — skipping');
                     } else {
                         const settings = cache?.printerSettings?.length > 0
                             ? cache.printerSettings
@@ -1973,96 +1798,101 @@ async function completeOrderAfterPayment() {
                             const sourceName = item.printer_name;
                             const mapping = settings.find(p => p.setting_code === sourceName);
                             const targetPrinter = mapping?.setting_value;
+
                             if (sourceName && targetPrinter) {
                                 if (!acc[targetPrinter]) acc[targetPrinter] = [];
                                 acc[targetPrinter].push(item);
                             }
+
                             if (item.s_no !== item.parent_sno) {
                                 const parentItem = kprintItems.find(p => p.s_no === item.parent_sno);
-                                if (parentItem?.printer_name) {
+                                if (parentItem && parentItem.printer_name) {
                                     const parentMapping = settings.find(p => p.setting_code === parentItem.printer_name);
                                     const parentPrinter = parentMapping?.setting_value;
                                     if (parentPrinter && parentPrinter !== targetPrinter) {
                                         if (!acc[parentPrinter]) acc[parentPrinter] = [];
-                                        if (!acc[parentPrinter].find(i => i.s_no === item.s_no))
+                                        if (!acc[parentPrinter].find(i => i.s_no === item.s_no)) {
                                             acc[parentPrinter].push({ ...item });
+                                        }
                                     }
                                 }
                             }
                             return acc;
                         }, {});
 
+                        console.log('🖨️ Printer groups:', Object.entries(printerGroups)
+                            .map(([code, items]) => `${code}(${items.length})`).join(', '));
+
                         for (const [pCode, items] of Object.entries(printerGroups)) {
                             try {
-                                console.log(`🔥 [KITCHEN] Firing [${pCode}]`);
+                                console.log(`🔥 [KITCHEN] Firing [${pCode}] | Items:`, items.map(i => i.item_name));
                                 kitchenPrint('KITCHEN', [{ ...kprintOrder, sales_dtls: items.map(i => ({ ...i })) }], '0', pCode);
                             } catch (err) {
-                                console.error(`❌ [KITCHEN] Fire failed [${pCode}]:`, err);
+                                console.error(`❌ [KITCHEN] Fire failed for [${pCode}]:`, err);
                             }
-                            await new Promise(r => setTimeout(r, 400));
+                            await new Promise(resolve => setTimeout(resolve, 400));
                         }
                     }
 
                     // 3. Label
                     if (!receiptSalesDtls?.length) {
-                        console.warn('⚠️ [LABEL] No items — skipping');
+                        console.warn('⚠️ [LABEL] No items found — skipping');
                     } else {
-                        const labelOrder = {
-                            ...(enrichedOrder ?? {}),
-                            ...(receiptRecord ?? {}),
-                            sales_dtls: receiptSalesDtls,
-                            sales_service_dtls: receiptRecord?.sales_service_dtls?.length > 0
-                                ? receiptRecord.sales_service_dtls : (enrichedOrder?.sales_service_dtls ?? []),
-                            sales_payment_dtls: enrichedOrder?.sales_payment_dtls?.length > 0
-                                ? enrichedOrder.sales_payment_dtls : (receiptRecord?.sales_payment_dtls ?? [])
-                        };
-
-                        const parentItems = receiptSalesDtls.filter(i =>
-                            String(i.s_no) === String(i.parent_sno)
-                        );
-                        const totalLabelCount = parentItems.reduce((sum, p) =>
-                            sum + Math.max(1, parseInt(p.qty || 1)), 0
-                        );
-
-                        let labelIndex = 0;
-                        console.log('🏷️ [LABEL] parents:', parentItems.length, '| total:', totalLabelCount);
-
-                        for (const parentItem of parentItems) {
-                            const itemGroup = receiptSalesDtls.filter(i =>
-                                String(i.parent_sno) === String(parentItem.s_no)
-                            );
-                            const labelItems = itemGroup.length > 0 ? itemGroup : [parentItem];
-
-                            const singleLabelOrder = {
-                                ...labelOrder,
-                                sales_dtls: labelItems,
-                                _label_index: labelIndex,
-                                _label_total: totalLabelCount,
+                        try {
+                            const labelOrder = {
+                                ...(enrichedOrder ?? {}),
+                                ...(receiptRecord ?? {}),
+                                sales_dtls: receiptSalesDtls,
+                                sales_service_dtls: receiptRecord?.sales_service_dtls?.length > 0
+                                    ? receiptRecord.sales_service_dtls
+                                    : (enrichedOrder?.sales_service_dtls ?? []),
+                                sales_payment_dtls: enrichedOrder?.sales_payment_dtls?.length > 0
+                                    ? enrichedOrder.sales_payment_dtls
+                                    : (receiptRecord?.sales_payment_dtls ?? [])
                             };
 
-                            try {
-                                console.log(`🏷️ [LABEL] Printing s_no:${parentItem.s_no} "${parentItem.item_name}"`);
-                                await labelPrint('LABEL', [singleLabelOrder]);
-                                console.log(`✅ [LABEL] Confirmed s_no:${parentItem.s_no}`);
-                            } catch (err) {
-                                console.error(`❌ [LABEL] Failed s_no:${parentItem.s_no}:`, err.message);
-                            }
 
-                            labelIndex += Math.max(1, parseInt(parentItem.qty || 1));
+                            const parentItems = receiptSalesDtls.filter(i =>
+                                String(i.s_no) === String(i.parent_sno)
+                            );
+
+                            // Calculate total labels = sum of all parent qty values
+                            const totalLabelCount = parentItems.reduce((sum, p) =>
+                                sum + Math.max(1, parseInt(p.qty || 1)), 0
+                            );
+
+                            let labelIndex = 0;
+                            console.log('🏷️ [LABEL] Firing... parents:', parentItems.length, '| total labels:', totalLabelCount);
+
+                            for (const parentItem of parentItems) {
+                                const itemGroup = receiptSalesDtls.filter(i =>
+                                    String(i.parent_sno) === String(parentItem.s_no)
+                                );
+                                const singleLabelOrder = {
+                                    ...labelOrder,
+                                    sales_dtls: itemGroup,
+                                    _label_index: labelIndex,           // ← pass start index
+                                    _label_total: totalLabelCount,      // ← pass total count
+                                };
+                                try {
+                                    console.log(`🏷️ [LABEL] Printing parent s_no:${parentItem.s_no} "${parentItem.item_name}" | rows: ${itemGroup.length}`);
+                                    const p = labelPrint('LABEL', [singleLabelOrder]);
+                                    if (p?.catch) p.catch(e => console.error(`❌ [LABEL] Print failed for s_no:${parentItem.s_no}:`, e));
+                                } catch (err) {
+                                    console.error(`❌ [LABEL] Execution error for s_no:${parentItem.s_no}:`, err);
+                                }
+                                labelIndex += Math.max(1, parseInt(parentItem.qty || 1));
+                                await new Promise(resolve => setTimeout(resolve, 300));
+                            }
+                        } catch (err) {
+                            console.error('❌ [LABEL] Execution error:', err);
                         }
                     }
-
                 } catch (printErr) {
                     console.error('❌ [PRINTING] getPrintData failed:', printErr);
-                } finally {
-                    // ── [FIX 3] ALWAYS resolves — covers ALL paths ────────────
-                    console.log('🔔 [_resolvePrinting] resolving');
-                    _resolvePrinting('done');
                 }
-
             } catch (bgErr) {
                 console.error('❌ Background Task Error:', bgErr);
-                _resolvePrinting('done');
             }
         })();
 
@@ -2442,42 +2272,42 @@ async function completeOrderAfterPayment() {
 // =============================================================================
 // PAYMENT COMPLETE HTTP
 // =============================================================================
+
 async function notifyPaymentComplete(paymentData) {
     try {
         let sanitizedOrderData = null;
         if (paymentData.orderData) {
             sanitizedOrderData = {
                 ...paymentData.orderData,
+                // 🔥 FIX 1: Explicitly stringify tips_amt and other numeric strings
                 tips_amt: String(paymentData.orderData.tips_amt || "0.00"),
                 change_amt: String(paymentData.orderData.change_amt || "0.00"),
                 sub_total: String(paymentData.orderData.sub_total || "0.00"),
                 net_amt: String(paymentData.orderData.net_amt || "0.00"),
                 total_tax: String(paymentData.orderData.total_tax || "0.00"),
                 total_tender_amt: String(paymentData.orderData.total_tender_amt || "0.00"),
-                // [ADDED] Strip terminal info — server expects '' not array
-                sales_other_info: '',
-                // [ADDED] Strip sales_other_info + terminal object from each payment detail
-                sales_payment_dtls: paymentData.orderData.sales_payment_dtls?.map(p => {
-                    const { sales_other_info, terminal, ...rest } = p;
-                    return rest;
-                }),
+
+                // FIX 2: Ensure is_absorbtax is a number/int for the backend
                 sales_dtls: paymentData.orderData.sales_dtls?.map(item => ({
                     ...item,
                     is_absorbtax: item.is_absorbtax === true ? 1 :
                         (item.is_absorbtax === false ? 0 : item.is_absorbtax),
+                    // Also stringify item-level numeric values if your DTO requires it
                     unit_price: String(item.unit_price || "0.00"),
                     sub_total: String(item.sub_total || "0.00")
                 }))
             };
         }
+
         const payload = {
+            // 🔥 FIX 3: If 'request' fails, try 'Request' (Capital R) to match C# property naming
             request: 'payment_complete',
-            deviceId: localStorage.getItem('sok_device_id'),
+            deviceId: localStorage.getItem('sok_device_id') || '01',
             orderId: paymentData.orderId || paymentData.sales_no,
             salesNo: paymentData.sales_no,
             tableNo: paymentData.orderData?.table_no || '',
-            orderType: localStorage.getItem('orderType'),
-            paymentMethod: paymentData.paymentMethod,
+            orderType: localStorage.getItem('orderType') || 'T',
+            paymentMethod: paymentData.paymentMethod || 'NETS',
             totalAmount: parseFloat(paymentData.totalAmount || 0),
             paidAmount: parseFloat(paymentData.paidAmount || 0),
             changeAmount: String(paymentData.changeAmount || '0.00'),
@@ -2485,7 +2315,9 @@ async function notifyPaymentComplete(paymentData) {
             receiptNumber: paymentData.receiptNumber || paymentData.sales_no,
             orderData: sanitizedOrderData
         };
+
         console.log('📤 Sending sanitized payment payload:', payload);
+
         const response = await fetch('/API/SOKOrder/payment-complete', {
             method: 'POST',
             headers: {
@@ -2494,7 +2326,10 @@ async function notifyPaymentComplete(paymentData) {
             },
             body: JSON.stringify(payload)
         });
+
+        // Parse response safely
         const result = await response.json().catch(() => ({}));
+
         if (response.ok) {
             console.log('✅ Payment notification sent:', result);
             return { success: true, data: result };
@@ -2507,6 +2342,7 @@ async function notifyPaymentComplete(paymentData) {
         return { success: false, error: error.message };
     }
 }
+
 // =============================================================================
 // UI HELPERS
 // =============================================================================
@@ -2536,7 +2372,7 @@ function showPaymentError(message) {
     // If the order was already posted successfully in the last few seconds,
     // ignore any late "Failure" messages from the terminal.
     if (isPaymentInProgress === false && paymentLedger.length === 0) {
-        console.warn("⚠️ Ignoring late 'Payment Failed' message because order is already complete."); _recordTender
+        console.warn("⚠️ Ignoring late 'Payment Failed' message because order is already complete.");
         return;
     }
 

@@ -257,9 +257,6 @@ export const calcOrderAmt = (order, orderItems) => {
         (items.length > 0 && (items[0].is_absorbtax === 1 || items[0].header_is_absorbtax === "Y"));
 
     // ── 2. Exclude modifier parent placeholders from totals ────────────────
-    // For modifier-type items, the parent row sub_total/tax_amt/svc_amt are
-    // placeholders — the real values live in the named-modifier child rows.
-    // Including both would double-count price, tax and service charge.
     const modifierParentSnos = new Set(
         items
             .filter(i => i.modifier_name && i.modifier_name !== '')
@@ -269,38 +266,84 @@ export const calcOrderAmt = (order, orderItems) => {
         modifierParentSnos.has(String(item.s_no)) &&
         String(item.s_no) === String(item.parent_sno);
 
-    // ── 3. Raw (unrounded) accumulators ───────────────────────────────────
-    const raw_sub_total = items.reduce((acc, item) =>
+    // ── 3. Promote size variant price to parent ────────────────────────────
+    // For combo/size-variant items, the parent row carries base price and
+    // the child row (with modifier_name set + unit_price > 0) carries the
+    // actual selected size price. Promote child price to parent and zero
+    // child to avoid double-counting — mirrors modifier parent pattern above.
+    const pricedChildByParent = new Map();
+    items.forEach(item => {
+        if (String(item.s_no) === String(item.parent_sno)) return; // skip parents
+        if (!item.modifier_name || item.modifier_name === '') return; // must have modifier_name
+        if (parseFloat(item.unit_price || 0) === 0) return;          // must be priced
+        // Only record first priced child per parent
+        const parentKey = String(item.parent_sno);
+        if (!pricedChildByParent.has(parentKey)) {
+            pricedChildByParent.set(parentKey, item);
+        }
+    });
+
+    const normalizedItems = items.map(item => {
+        const key = String(item.s_no);
+        const pricedChild = pricedChildByParent.get(key);
+
+        // Parent with a priced child → promote child price to parent
+        if (pricedChild && String(item.s_no) === String(item.parent_sno)) {
+            const variantPrice = parseFloat(pricedChild.unit_price || 0);
+            const qty = parseFloat(item.qty || 1);
+            return {
+                ...item,
+                unit_price: variantPrice,
+                sub_total: (variantPrice * qty).toFixed(2),
+                tax_amt: pricedChild.tax_amt,
+            };
+        }
+
+        // Priced size variant child → zero out to avoid double count
+        if (
+            String(item.s_no) !== String(item.parent_sno) &&
+            item.modifier_name && item.modifier_name !== '' &&
+            parseFloat(item.unit_price || 0) > 0 &&
+            pricedChildByParent.get(String(item.parent_sno))?.s_no === item.s_no
+        ) {
+            return {
+                ...item,
+                unit_price: 0,
+                sub_total: '0.00',
+                tax_amt: '0.000000',
+            };
+        }
+
+        return item;
+    });
+
+    // ── 4. Raw (unrounded) accumulators — use normalizedItems ─────────────
+    const raw_sub_total = normalizedItems.reduce((acc, item) =>
         isModifierParent(item) ? acc : acc + parseFloat(item?.sub_total || 0), 0);
-
-    const raw_total_disc = items.reduce((acc, item) =>
+    const raw_total_disc = normalizedItems.reduce((acc, item) =>
         acc + parseFloat(item?.pro_disc_amt || 0), 0);
-
-    const raw_total_svc = items.reduce((acc, item) =>
+    const raw_total_svc = normalizedItems.reduce((acc, item) =>
         isModifierParent(item) ? acc : acc + parseFloat(item?.svc_amt || 0), 0);
-
-    const raw_total_tax = items.reduce((acc, item) =>
+    const raw_total_tax = normalizedItems.reduce((acc, item) =>
         isModifierParent(item) ? acc : acc + parseFloat(item?.tax_amt || 0), 0);
-
-    const raw_absorbed = items.reduce((acc, item) => {
+    const raw_absorbed = normalizedItems.reduce((acc, item) => {
         if (isModifierParent(item)) return acc;
         const itemAbsorb = item.is_absorbtax === 1 || item.header_is_absorbtax === "Y";
         return (shouldAbsorb || itemAbsorb)
             ? acc + parseFloat(item?.tax_amt || 0)
             : acc;
     }, 0);
-
     const raw_round_adj = parseFloat(order?.round_adj_amt || 0);
 
-    // ── 4. Format ──────────────────────────────────────────────────────────
-    const sub_total          = raw_sub_total.toFixed(2);
-    const total_disc         = raw_total_disc.toFixed(2);
-    const total_svc          = raw_total_svc.toFixed(2);
-    const total_tax          = raw_total_tax.toFixed(2);
+    // ── 5. Format ──────────────────────────────────────────────────────────
+    const sub_total = raw_sub_total.toFixed(2);
+    const total_disc = raw_total_disc.toFixed(2);
+    const total_svc = raw_total_svc.toFixed(2);
+    const total_tax = raw_total_tax.toFixed(2);
     const total_tax_absorbed = raw_absorbed.toFixed(2);
-    const round_adj_amt      = raw_round_adj.toFixed(2);
+    const round_adj_amt = raw_round_adj.toFixed(2);
 
-    // ── 5. Net amount ──────────────────────────────────────────────────────
+    // ── 6. Net amount ──────────────────────────────────────────────────────
     const net_amt = (
         raw_sub_total
         - raw_total_disc
@@ -316,12 +359,13 @@ export const calcOrderAmt = (order, orderItems) => {
         taxAbsorbed: total_tax_absorbed,
         absorbFlag: shouldAbsorb ? "Y" : "N",
         modifierParentsExcluded: [...modifierParentSnos],
+        sizeVariantParentsPromoted: [...pricedChildByParent.keys()], // ← new
     });
 
     return {
         ...order,
-        sales_dtls: items,
-        absorb_tax:          shouldAbsorb ? "Y" : (order?.absorb_tax || "N"),
+        sales_dtls: items,          // ← always return ORIGINAL items unchanged
+        absorb_tax: shouldAbsorb ? "Y" : (order?.absorb_tax || "N"),
         sub_total,
         total_disc,
         total_svc,
@@ -331,7 +375,6 @@ export const calcOrderAmt = (order, orderItems) => {
         net_amt,
     };
 };
-
 
 /**
  * Gets the price based on service type.
@@ -3624,138 +3667,99 @@ export const getNewOrder = (data) => {
  */
 
 export const getNewOrderSOK = (data) => {
-    const { date, store } = useCache();
-    const service_type = data?.service_type || localStorage.getItem("orderType");
-    const service_type_info = SERVICE_TYPES?.find((item) =>
-        same(item?.service_type, service_type)
-    )?.service_type_info;
-
-    // ✅ SOK-specific fields
-    const table_no = ""; // Always empty for SOK
-    const order_from = data?.order_from || "SOK";
-    const mode_of_order = data?.mode_of_order || service_type_info || (service_type === "E" ? "Dine In" : "Takeaway");
-    const order_mode = data?.order_mode || "PayFirst";
-    const qr_type = data?.qr_type || "Static";
-    const customer_code = data?.customer_code || "";
-
-    // ✅ Company/Register info — fall back to localStorage when cache is cleared after start over
-    const store_name = data?.store_name || store?.store_name || localStorage.getItem('storename') || "";
-    const comp_code = data?.comp_code || store?.comp_code || localStorage.getItem('comp_code') || "01";
-    const register_name = data?.register_name || store?.register_name || localStorage.getItem('registername') || "POS01";
-    const shift_code = data?.shift_code || store?.shift_code || localStorage.getItem('shiftcode') || "SHIFT1";
-
-    // ✅ Tax absorption — fall back to service_type logic when store is null
-    const absorbTax = store?.is_absorbtax !== undefined
-        ? (store.is_absorbtax ? "Y" : "N")
-        : (localStorage.getItem('absorb_tax') || (service_type === 'T' ? 'N' : 'Y'));
-
-    // ✅ User tracking
-    const c_userid = data?.c_userid || "WEBORDER";
-    const m_userid = data?.m_userid || "WEBORDER";
-    const currentDateTime = getNowInAPIFormat(date);
-
-    // Clean up data object to avoid duplication
     delete data?.service_type;
     delete data?.service_type_info;
     delete data?.table_no;
-    delete data?.order_from;
-    delete data?.mode_of_order;
-    delete data?.order_mode;
-    delete data?.qr_type;
-    delete data?.store_name;
-    delete data?.customer_code;
-    delete data?.comp_code;
-    delete data?.register_name;
-    delete data?.shift_code;
-    delete data?.c_userid;
-    delete data?.m_userid;
+
+    const { date, store, svcs: cacheSvcs } = useCache();
+    const svcs = cacheSvcs || window.apiManager?.loadedData?.get('svcs');
+    const service_type = data?.service_type || localStorage.getItem("orderType");
+
+    const service_type_info = SERVICE_TYPES
+        ?.find(item => item?.service_type === service_type)
+        ?.service_type_info;
+
+    const isTakeaway = service_type === "T";
+    const currentDateTime = getNowInAPIFormat(date);
+    const customer_code = data?.customer_code || "";
+    const svcConfig = Array.isArray(svcs)
+        ? svcs.find(s => s.service_type === service_type)
+        : null;
+    const svcRate = Number(svcConfig?.service_value ?? 0);
+    const svcBy = svcConfig?.service_by ?? 'P';
+    const isApplySvc = svcRate > 0 ? 1 : 0;
+
+    const absorbTax = isAbsorbTax() ? "Y" : "N";
+
+
+    const table_no = data?.table_no || "";
+
+
 
     const newOrder = calcOrderAmt({
-        // ✅ SOK Required Fields (from payload analysis)
-        comp_code,
-        register_name,
-        shift_code,
         sales_no: "",
-
+        doc_date: currentDateTime,
+        customer_code,
+        cust_addr_s_no: "",
         service_type,
         service_type_info,
-        order_from,              // "SOK"
-        mode_of_order,           // "Dine In" or "Takeaway"
-        order_mode,              // "PayFirst"
-        qr_code: "",
-        qr_type,                 // "Static"
-        store_name,
-
         order_status_id: "N",
         order_status_desc: "New",
         kitchen_status_id: "P",
         kitchen_status_desc: "In Progress",
-        kds_status: "P",         // ✅ Kitchen Display System status
-
-        doc_date: currentDateTime,
-        c_date: currentDateTime,
-        m_date: currentDateTime,
-        c_userid,                // "WEBORDER"
-        m_userid,                // "WEBORDER"
-
-        customer_code,           // "exempt"
-        customer_name: "",
-        contact_no: "",
-        email: "",
-        address: "",
-        postal_code: "",
-        dob: "",
-        cust_addr_s_no: "",
-
-        sub_total: "0.00",
+        sub_total: 0,
         disc_type: "N",
         disc_name: "None",
         disc_value: 0,
-        disc_amt: 0,
-        total_disc: "0.00",
-        total_svc: "0.00",
-        total_tax: "0.00",
-        round_adj_amt: "0.00",
+        total_disc: 0,
+        total_svc: 0,
+        total_tax: 0,
+        round_adj_amt: 0,
         absorb_tax: absorbTax,
         absorb_tax_info: absorbTax === "Y" ? "Absorb Tax" : "Not Absorb Tax",
-        net_amt: "0.00",
-        tips_amt: "0.00",
-        total_tender_amt: "0.00",
+        net_amt: 0,
+        tips_amt: 0,
+        total_tender_amt: 0,
         change_amt: 0,
-
         no_of_pax: 1,
-        table_no,                // "" (empty for SOK)
-        new_table_no: "",
-        table_transfer: "N",
-        table_transfer_sno: "",
-
+        table_no,
         remarks: "",
-        kitchen_remarks: "",
         del_driver: "",
-
         ref_1: "",
         ref_2: "",
         ref_3: "",
         ref_4: "",
         ref_5: "",
-
         sales_dtls: [],
         sales_service_dtls: [],
         sales_payment_dtls: [],
         sales_other_info: "",
-
-        // ✅ Delivery/Pickup timestamps
-        delivery_datetime: "",
-        pickup_datetime: data?.pickup_datetime || "",
-
-        // ✅ Payment info (for tracking)
-        payment_register_name: register_name,
-        payment_shift_code: shift_code,
-        card_no: "",
-
-        ...data, // Allow override of any field
+        table_transfer: "N",
+        table_transfer_sno: "",
+        order_from: "SOK",
+        mode_of_order: service_type_info,
+        order_mode: "PayFirst",
+        qr_type: "Static",
+        store_name: store?.store_name || "",
+        comp_code: store?.comp_code || "01",
+        register_name: store?.register_name || "POS01",
+        shift_code: store?.shift_code || "SHIFT1",
+        c_date: currentDateTime,
+        m_date: currentDateTime,
+        c_userid: "WEBORDER",
+        m_userid: "WEBORDER",
+        svc_rate: svcRate,
+        svc_by: svcBy,
+        is_apply_svc: isApplySvc,
+        ...data,
     });
 
+    console.log('🔧 getNewOrderSOK result:', {
+        service_type: newOrder.service_type,
+        service_type_info: newOrder.service_type_info,
+        mode_of_order: newOrder.mode_of_order,
+        localStorage_orderType: localStorage.getItem('orderType')
+    });
     return newOrder;
 };
 
@@ -4157,13 +4161,6 @@ export const getMenuCategoryRows = () => {
 export const getMenuItemRows = () => {
     return 4;
 };
-
-
-
-
-
-
-
 
 
 /**

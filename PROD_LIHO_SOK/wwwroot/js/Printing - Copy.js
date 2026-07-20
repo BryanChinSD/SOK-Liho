@@ -47,7 +47,7 @@ import { getRefItem, getRefItemPrefix } from "../hardcoded/liho.js";
 
 // ── print utility ─────────────────────────────────────────────────────────────
 //const FLASK_DOMAIN = 'http://192.168.0.59:5055';
-const FLASK_DOMAIN = 'http://10.226.26.4:5019';
+const FLASK_DOMAIN = 'http://10.230.16.5:5017';
 const PRINT_TIMEOUT = 30_000;
 function stripControlChars(obj, options) {
     if (!obj || typeof obj !== 'object') return obj;
@@ -1170,7 +1170,8 @@ export const receiptPrint = async (
         const [headerImg, footerImg, doc] = await Promise.all([
             needImages ? loadImage("/img/receipt.png").catch(() => null) : Promise.resolve(_cachedHeaderImg),
             needImages ? loadImage("/img/receipt-footer.png").catch(() => null) : Promise.resolve(_cachedFooterImg),
-            newPDF({ compress: false }),
+            //    newPDF({ compress: false }),
+            newPDF({ compress: false, noCjkPatch: true, defaultFont: 'SourceSansPro-Regular' }),
         ]);
         if (headerImg) _cachedHeaderImg = headerImg;
         if (footerImg) _cachedFooterImg = footerImg;
@@ -2324,6 +2325,8 @@ export const receiptPrint = async (
             const pdfName = `EvolutPOS_${printerName}_${timestamp()}_${index}${isDuplicatedReceipt ? "_Duplicate" : ""}${sales_no ? `_${sales_no}` : ""}_Receipt.pdf`;
             const printOption = getSetting("MORE", "GENERAL", "PRINT_OPTION");
             console.log('🖨️ [receiptPrint] PRINT_OPTION:', printOption, '| match:', same(printOption, PRINT_SERVICE.PRINT));
+            const arr = new Uint8Array(await pdf.arrayBuffer());
+            console.log('🔍 PDF header:', arr[0], arr[1], arr[2], arr[3]);
             print(pdf, printerName, pdfName, false, true)
                 .then(() => console.log(`[ORDER - ${type} - RECEIPT PRINTING] [SUCCESS] Receipt printed | id: ${order?.sales_no}`))
                 .catch((e) => console.error(`[ORDER - ${type} - RECEIPT PRINTING] [FAIL] Print send failed | id: ${order?.sales_no}`, e));

@@ -1161,16 +1161,43 @@
     </div>
 
 
-    <nav class="bottom-nav">
+@*     <nav class="bottom-nav">
         <div class="nav-item" onclick="toggleCart()">
             <div style="position: relative; display: inline-block;">
                 <div class="nav-icon">🛒</div>
                 <div class="cart-badge" id="cartBadge" style="display: none;">0</div>
             </div>
             <div class="nav-subtotal" id="navSubtotal" style="display: none;">$0.00</div>
-        </div>
-    </nav>
+        </divs
+    </nav> *@
 
+<nav class="bottom-nav" onclick="toggleCart()">
+    <div class="bottom-nav-inner">
+        <div class="nav-cart-left">
+            <span class="nav-cart-label">Cart</span>
+            <span id="navItemCount" class="nav-cart-count">0 items</span>
+        </div>
+        <div id="navItemImages" class="nav-cart-images"></div>
+        <div class="nav-cart-right">
+            <span id="navSubtotal" class="nav-cart-total">$0.00</span>
+        </div>
+    </div>
+</nav>
+
+@* <nav class="bottom-nav bottom-nav--fullbar" onclick="toggleCart()">
+    <div class="bottom-nav-inner">
+        <div class="nav-cart-left">
+            <span class="nav-cart-label">Cart</span>
+            <span id="navItemCount" class="nav-cart-count">0 items</span>
+        </div>
+        <div id="navItemImages" class="nav-cart-images"></div>
+        <div class="nav-cart-right">
+            <div class="nav-cart-right-inner">
+                <span id="navSubtotal" class="nav-cart-total">$0.00</span>
+            </div>
+        </div>
+    </div>
+</nav> *@
 
     <div id="notificationToast" class="notification-toast" style="display: none;">
         <div class="toast-content">
@@ -2846,7 +2873,7 @@
                 //         const outlet   = window.sokWebSocket?.deviceInfo?.outlet || 'default';
 
                 //         if (deviceId) {
-                //             try {
+                //             try {f
                 //                 await fetch(`/API/SOKOrder/${outlet}/${deviceId}/cache/clear`, {
                 //                     method: "POST",
                 //                     headers: { "Content-Type": "application/json" }

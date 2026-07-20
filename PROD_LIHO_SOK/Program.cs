@@ -89,6 +89,10 @@ namespace PROD_LIHO_SOK
                 options.Cookie.IsEssential = true;
             });
 
+
+            builder.Services.AddMemoryCache();
+
+
             builder.Services.Configure<EberSettings>(builder.Configuration.GetSection("Eber"));
             builder.Services.Configure<OutletSettings>(builder.Configuration.GetSection("Outlet"));
             builder.Services.Configure<AscentisSettings>(builder.Configuration.GetSection("Ascentis"));

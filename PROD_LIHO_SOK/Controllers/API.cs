@@ -19,6 +19,8 @@ using Microsoft.Extensions.Caching.Memory;
 using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
 using PROD_LIHO_SOK.Models;
+using Microsoft.Extensions.Caching.Memory;
+using System.Security.Cryptography;
 
 [Route("api/[action]")]
 [ApiController]
@@ -36,25 +38,25 @@ public class KIOSKController : Controller
     private readonly HttpClient _httpClient; // Create this inside the constructor
     private static readonly TimeSpan SessionExpiration = TimeSpan.FromMinutes(30);
     private readonly string _posOrderLogBaseFolder;
+    private readonly IMemoryCache _cache; // inject in constructor
 
     public KIOSKController(
-       IHttpClientFactory httpClientFactory,
-       ILogger<KIOSKController> logger,
-       IConfiguration configuration,
-       IMemoryCache memoryCache,
-       IWebHostEnvironment env)
+        IHttpClientFactory httpClientFactory,
+        ILogger<KIOSKController> logger,
+        IConfiguration configuration,
+        IMemoryCache memoryCache,
+        IWebHostEnvironment env)
     {
         _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
-        _httpClient = _httpClientFactory.CreateClient(); // Create actual client instance
+        _httpClient = _httpClientFactory.CreateClient();
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _getPOSURL = _configuration["Outlet:NEXT_ONLINE_API_URL"];
         _getImgURL = _configuration["Outlet:IMAGE_API_URL"];
-        //_storeName = _configuration["Outlet:storeName"];
         _memoryCache = memoryCache ?? throw new ArgumentNullException(nameof(memoryCache));
         _posOrderLogBaseFolder = Path.Combine(env.ContentRootPath, "PosOrderLogs");
-
     }
+
     string formattedDate = DateTime.Today.ToString("yyyy-MM-dd");
     string dayName = DateTime.Today.ToString("dddd",
         new System.Globalization.CultureInfo("en-US"));
@@ -66,71 +68,65 @@ public class KIOSKController : Controller
         public string LanguageName { get; set; }
     }
 
+
+    private record CachedImage(byte[] Bytes, string ContentType, string ETag);
+
+    // ── Add near the top of the KIOSKController class ────────────────────────
+
     [HttpGet]
     public async Task<IActionResult> GetImageProxy(string imageUrl)
     {
         try
         {
             if (string.IsNullOrEmpty(imageUrl))
-            {
-                _logger.LogWarning("GetImageProxy called with empty imageUrl");
                 return BadRequest("Missing imageUrl parameter");
-            }
 
-            // Decode and clean
             imageUrl = Uri.UnescapeDataString(imageUrl).TrimStart('/');
+            string cacheKey = $"img:{imageUrl}";
 
-            // ✅ Log the configuration values
-            _logger.LogInformation("📋 Configuration Check:");
-            _logger.LogInformation("   _getImgURL: {GetImgURL}", _getImgURL);
-            _logger.LogInformation("   imageUrl param: {ImageUrl}", imageUrl);
-
-            // Construct full URL
-            string baseUrl = _getImgURL?.TrimEnd('/') ?? string.Empty;
-            string fullImageUrl = $"{baseUrl}/{imageUrl}";
-
-            _logger.LogInformation("🔗 Full URL constructed: {FullUrl}", fullImageUrl);
-
-            // Make the request
-            var response = await _httpClient.GetAsync(fullImageUrl);
-
-            _logger.LogInformation("📊 HTTP Response Status: {StatusCode}", response.StatusCode);
-
-            if (response.IsSuccessStatusCode)
+            // ── 1. Server memory cache — skip origin fetch entirely ──────────
+            if (!_memoryCache.TryGetValue(cacheKey, out CachedImage cached))
             {
+                string baseUrl = _getImgURL?.TrimEnd('/') ?? string.Empty;
+                string fullImageUrl = $"{baseUrl}/{imageUrl}";
+
+                var response = await _httpClient.GetAsync(fullImageUrl);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("❌ Image not found: {FullUrl} - {Status}",
+                        fullImageUrl, response.StatusCode);
+                    return NotFound(new { error = "Image not found", requestedPath = imageUrl });
+                }
+
                 var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
-                var imageBytes = await response.Content.ReadAsByteArrayAsync();
+                var bytes = await response.Content.ReadAsByteArrayAsync();
+                var etag = $"\"{Convert.ToHexString(System.Security.Cryptography.MD5.HashData(bytes))}\"";
 
-                Response.Headers.CacheControl = "public, max-age=86400, immutable";
-                Response.Headers.Append("Vary", "Accept-Encoding");
-                Response.Headers.Append("Access-Control-Allow-Origin", "*");
-
-                _logger.LogInformation("✅ Image served successfully: {ImageUrl} ({Bytes} bytes)",
-                    imageUrl, imageBytes.Length);
-                return File(imageBytes, contentType);
+                cached = new CachedImage(bytes, contentType, etag);
+                _memoryCache.Set(cacheKey, cached, new MemoryCacheEntryOptions
+                {
+                    SlidingExpiration = TimeSpan.FromHours(6),
+                    Size = bytes.Length
+                });
+                _logger.LogInformation("📥 Cached from origin: {Url} ({Bytes} bytes)", imageUrl, bytes.Length);
             }
 
-            _logger.LogWarning("❌ Image not found: {FullUrl} - Status: {StatusCode}",
-                fullImageUrl, response.StatusCode);
+            // ── 2. ETag / 304 — browser revalidation costs zero bytes ────────
+            Response.Headers.CacheControl = "public, max-age=86400, immutable";
+            Response.Headers.ETag = cached.ETag;
+            Response.Headers.Append("Vary", "Accept-Encoding");
+            Response.Headers.Append("Access-Control-Allow-Origin", "*");
 
-            return NotFound(new
-            {
-                error = "Image not found",
-                requestedPath = imageUrl,
-                fullUrl = fullImageUrl,
-                status = response.StatusCode.ToString(),
-                configuredBaseUrl = _getImgURL
-            });
+            var etagValue = cached.ETag.Trim('"');
+            if (Request.Headers.IfNoneMatch.Any(v => v != null && v.Contains(etagValue)))
+                return StatusCode(StatusCodes.Status304NotModified);
+
+            return File(cached.Bytes, cached.ContentType);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "💥 Error in GetImageProxy for: {ImageUrl}", imageUrl);
-            return StatusCode(500, new
-            {
-                error = "Internal server error",
-                message = ex.Message,
-                configuredBaseUrl = _getImgURL
-            });
+            return StatusCode(500, new { error = "Internal server error" });
         }
     }
     private async Task<string> getStore(string storeName)
