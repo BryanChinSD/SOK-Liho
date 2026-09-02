@@ -67,7 +67,7 @@ function getCleanStoreName() {
                 console.warn('⚠️ Could not double-decode, using single decode');
             }
         }
-
+         
         console.log('✅ Store name extracted from path (decoded):', storeName);
         return storeName;
     }
@@ -95,7 +95,7 @@ function fullyDecodeURIComponent(str) {
         prevDecoded = decoded;
         try {
             decoded = decodeURIComponent(decoded);
-        } catch (e) {
+        } catch (e) {  
             break;
         }
     }
@@ -223,7 +223,7 @@ export async function getCashReconStatus() {
 //                        useCache().setMenuItems(parsed);
 //                        return parsed;
 //                    }
-//                } catch (e) {
+//                } catch (e) { 
 //                    console.warn('⚠️ Could not parse sessionStorage MenuItems:', e);
 //                }
 //            }
@@ -875,33 +875,30 @@ export async function postOrder(params) {
     // ─────────────────────────────────────────────────────────────────────────
     // Step 4: Run all independent network calls IN PARALLEL
     // ─────────────────────────────────────────────────────────────────────────
-    //const ensureSession = async () => {
-    //    try {
-    //        await apiFetch('/GetDeviceSession');
-    //    } catch (err) {
-    //        console.error('Failed to refresh device session:', err);
-    //        throw new Error('Session refresh failed — cannot post order');
-    //    }
-    //};
+    const ensureSession = async () => {
+        try {
+            await apiFetch('/GetDeviceSession');
+        } catch (err) {
+            console.error('Failed to refresh device session:', err);
+            throw new Error('Session refresh failed — cannot post order');
+        }
+    };
 
-    //const sessionRefreshNeeded = !getCookie('token');
-    //const sessionRefreshPromise = sessionRefreshNeeded ? ensureSession() : Promise.resolve();
+    const sessionRefreshNeeded = !getCookie('token');
+    const sessionRefreshPromise = sessionRefreshNeeded ? ensureSession() : Promise.resolve();
 
-    //const [stockResult, shiftResult] = await Promise.all([
-    //    checkStocks({ info: { sales_dtls: order?.sales_dtls } }),
-    //    getShift(),
-    //    sessionRefreshPromise
-    //]);
     const [stockResult, shiftResult] = await Promise.all([
-        checkStocks({ info: { sales_dtls: order?.sales_dtls } }),
-        getShift()
+        //checkStocks({ info: { sales_dtls: order?.sales_dtls } }),
+        sessionRefreshPromise,
+        getShift(),
+        
     ]);
 
-    const { valid, unavailableItems } = stockResult;
-    if (!valid) {
-        console.error('Stock validation failed', unavailableItems);
-        return { success: false, response: unavailableItems };
-    }
+    //const { valid, unavailableItems } = stockResult;
+    //if (!valid) {
+    //    console.error('Stock validation failed', unavailableItems);
+    //    return { success: false, response: unavailableItems };
+    //}
 
     let token = getCookie('token');
     let tryCount = parseInt(getCookie('try-count') || 0);

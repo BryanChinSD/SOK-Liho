@@ -576,7 +576,7 @@ class SOKOrderWebSocket {
                 }
             }, this.CONNECTION_TIMEOUT);
 
-
+            
 
             // ── onopen ─────────────────────────────────────────────
             this.ws.onopen = () => {
@@ -1285,7 +1285,7 @@ class SOKOrderWebSocket {
                 }));
                 console.log('✅ Fixed sales_payment_dtls from ledger:', orderData.sales_payment_dtls);
             });
-
+        
         }
         else {
             console.warn("⚠️ No orderData or salesNo to update");
@@ -1502,41 +1502,48 @@ class SOKOrderWebSocket {
             const deviceId = localStorage.getItem("sok_device_id");
             const tableNo = localStorage.getItem("tableNo");
             const orderType = localStorage.getItem("orderType");
+
             if (!deviceId) {
                 console.error("❌ Missing device ID");
                 return { success: false, error: "Device ID not found" };
             }
+
             const payload = {
                 deviceId: deviceId,
-                // ✅ FIX: orderId must be the server order id (ORD-...), never fall back to sales_no (SAL-...)
-                orderId: paymentData.orderId || paymentData.server_order_id || paymentData.orderData?.server_order_id || '',
-                salesNo: paymentData.sales_no || '',
+                orderId: paymentData.orderId || paymentData.sales_no,
+                salesNo: paymentData.sales_no,
                 tableNo: tableNo || '',
-                orderType: orderType || '',
-                paymentMethod: paymentData.paymentMethod || '',
+                orderType: orderType || 'E',
+                paymentMethod: paymentData.paymentMethod || 'cash',
                 totalAmount: parseFloat(paymentData.totalAmount || 0),
                 paidAmount: parseFloat(paymentData.paidAmount || paymentData.totalAmount || 0),
                 changeAmount: parseFloat(paymentData.changeAmount || 0),
                 transactionId: paymentData.transactionId || '',
-                receiptNumber: paymentData.receiptNumber || paymentData.sales_no || '',
+                receiptNumber: paymentData.receiptNumber || paymentData.sales_no,
                 orderData: paymentData.orderData || null
             };
+
             console.log('💳 Sending payment notification:', payload);
+
             const response = await fetch('/API/SOKOrder/payment-complete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error('❌ Payment notification failed:', response.status, errorText);
                 return { success: false, error: `Server error: ${response.status}` };
             }
+
             const result = await response.json();
+
             if (result.success) {
                 console.log('✅ Payment notification sent successfully:', result);
                 console.log(`   └─ Notified ${result.posBroadcastCount} POS device(s)`);
                 console.log(`   └─ Synced to ${result.sokBroadcastCount} SOK device(s)`);
+
                 this.showPaymentNotification("Payment Sent", "POS has been notified", "success");
                 return { success: true, data: result };
             } else {
@@ -1580,22 +1587,7 @@ class SOKOrderWebSocket {
         });
     }
 
-    drainPendingCacheUpdate() {
-        if (!this._pendingCacheUpdate) return;
-
-        // ✅ Don't drain while modal is open — will drain when modal closes
-        const addonModal = document.getElementById('addonModal');
-        if (addonModal?.classList.contains('show') || window.modalState?.addonOpen) {
-            console.log('⏭️ drainPendingCacheUpdate deferred — modal is open');
-            return;
-        }
-
-        const msg = this._pendingCacheUpdate;
-        this._pendingCacheUpdate = null;
-        console.log('▶️ Replaying blocked cache_updated after addToCart');
-        this.handleCacheUpdate(msg);
-    }
-
+  
 
     handleCacheUpdate(message) {
         // 1. INITIALIZATION PROTECTION LAYER
@@ -1610,14 +1602,7 @@ class SOKOrderWebSocket {
 
         // 2. ACTIVE INTERACTION BLOCK
         if (window._blockWSSync) {
-            console.log('🛑 [WS Sync Blocked] addToCart in progress — queuing for retry');
-            this._pendingCacheUpdate = message; // overwrite with latest
-            return;
-        }
-        const addonModal = document.getElementById('addonModal');
-        if (addonModal?.classList.contains('show') || window.modalState?.addonOpen) {
-            console.log('⏭️ handleCacheUpdate queued — modal is open');
-            this._pendingCacheUpdate = message;
+            console.log('🛑 [WS Sync Blocked] addToCart in progress');
             return;
         }
 
@@ -1675,6 +1660,10 @@ class SOKOrderWebSocket {
             }
 
             // 3. VOUCHER REMOVAL GUARD
+            // After removeVoucherAndRecalculate fires, we set window._voucherRemovedAt.
+            // For the next 10 seconds, any incoming cache_updated that still has stale
+            // pro_disc_amt / disc_amt on items gets its discount fields stripped so the
+            // clean local state isn't overwritten.
             const voucherRemovedRecently = window._voucherRemovedAt
                 && (Date.now() - window._voucherRemovedAt) < 10000;
 
@@ -1692,6 +1681,7 @@ class SOKOrderWebSocket {
                         disc_amt: '0.00',
                     }));
 
+                    // Recalculate with clean items to get correct net_amt
                     const cleanedOrder = calcOrderAmt({
                         ...orderData,
                         sales_dtls: cleanedSalesDtls,
@@ -1701,15 +1691,10 @@ class SOKOrderWebSocket {
                         total_disc: '0.00',
                     });
 
-                    const cleanedDtls = cleanedOrder.sales_dtls || [];
-                    const lastSNo = cleanedDtls.length > 0
-                        ? Math.max(...cleanedDtls.map(i => parseInt(i.s_no) || 0))
+                    const salesDtls = cleanedOrder.sales_dtls || [];
+                    const lastSNo = salesDtls.length > 0
+                        ? Math.max(...salesDtls.map(i => parseInt(i.s_no) || 0))
                         : 0;
-
-                    // ✅ FIX: sum qty of base rows, not count of rows
-                    const itemCount = cleanedDtls
-                        .filter(i => String(i.s_no) === String(i.parent_sno))
-                        .reduce((sum, i) => sum + (Number(i.qty) || 1), 0);
 
                     setOrder(cleanedOrder);
                     setLastSNo(lastSNo);
@@ -1734,6 +1719,7 @@ class SOKOrderWebSocket {
             }
 
             // 4. VOUCHER PRESERVATION LOGIC
+            // If a voucher is currently applied locally, preserve the local discount fields
             const hasVoucherApplied = !!(order?.voucher_code && order?.voucher_discount);
 
             if (hasVoucherApplied) {
@@ -1757,13 +1743,13 @@ class SOKOrderWebSocket {
                     return;
                 }
 
-                const voucherSalesDtls = mergedOrderData.sales_dtls || [];
-                const lastSNo = voucherSalesDtls.length > 0
-                    ? Math.max(...voucherSalesDtls.map(i => parseInt(i.s_no) || 0))
+                const salesDtls = mergedOrderData.sales_dtls || [];
+                const lastSNo = salesDtls.length > 0
+                    ? Math.max(...salesDtls.map(i => parseInt(i.s_no) || 0))
                     : 0;
 
                 console.log("💾 Updating store with voucher preservation:", {
-                    itemCount: voucherSalesDtls.length, lastSNo, netAmount: mergedOrderData.net_amt,
+                    itemCount: salesDtls.length, lastSNo, netAmount: mergedOrderData.net_amt,
                 });
 
                 setOrder(mergedOrderData);
@@ -1778,13 +1764,10 @@ class SOKOrderWebSocket {
 
                 this.updateUIImmediate(mergedOrderData);
 
-                // ✅ FIX: sum qty of base rows, not count of rows + proper pluralization
-                const voucherItemCount = voucherSalesDtls
-                    .filter(i => String(i.s_no) === String(i.parent_sno))
-                    .reduce((sum, i) => sum + (Number(i.qty) || 1), 0);
+                const itemCount = salesDtls.filter(i => i.s_no === i.parent_sno).length;
                 this.showUpdateNotification(
                     "Order Updated",
-                    `${voucherItemCount} item${voucherItemCount !== 1 ? 's' : ''} • $${parseFloat(order.net_amt || 0).toFixed(2)}`
+                    `${itemCount} items • $${parseFloat(order.net_amt || 0).toFixed(2)}`
                 );
 
                 this.pulseCartContainer();
@@ -1815,13 +1798,10 @@ class SOKOrderWebSocket {
 
             this.updateUIImmediate(orderData);
 
-            // ✅ FIX: sum qty of base rows, not count of rows + proper pluralization
-            const itemCount = salesDtls
-                .filter(i => String(i.s_no) === String(i.parent_sno))
-                .reduce((sum, i) => sum + (Number(i.qty) || 1), 0);
+            const itemCount = salesDtls.filter(i => i.s_no === i.parent_sno).length;
             this.showUpdateNotification(
                 "Order Updated",
-                `${itemCount} item${itemCount !== 1 ? 's' : ''} • $${parseFloat(summary?.netAmount || orderData.net_amt || 0).toFixed(2)}`
+                `${itemCount} items • $${parseFloat(summary?.netAmount || orderData.net_amt || 0).toFixed(2)}`
             );
 
             this.pulseCartContainer();
@@ -1889,15 +1869,7 @@ class SOKOrderWebSocket {
 
 
     async syncOrderFromCache(silent = false) {
-        if (window.isSelectingOrderType) {
-            console.log('⏭️ syncOrderFromCache blocked — selectOrderType in progress');
-            return;
-        }
-        const addonModal = document.getElementById('addonModal');
-        if (addonModal?.classList.contains('show') || window.modalState?.addonOpen) {
-            console.log('⏭️ syncOrderFromCache skipped — modal is open');
-            return;
-        }
+
         // === 0. BLOCK WS SYNC ON LOAD (post start-over) ===========================
         if (sessionStorage.getItem('block_ws_sync_on_load') === 'true') {
             sessionStorage.removeItem('block_ws_sync_on_load');
@@ -1957,8 +1929,6 @@ class SOKOrderWebSocket {
         const isWarmBoot = sessionStorage.getItem('skip_api_on_load') === 'true';
         const orderTypeSelected = !!localStorage.getItem('orderType');
         const menuVisible = !!document.querySelector('.menu-grid, .menu-container, #menuGrid');
-
-
         const isFreshBoot = !hasOrderId && !hasLocalItems;
 
         // === 3. FRESH BOOT & WARM BOOT LOGIC =====================================
@@ -2168,12 +2138,6 @@ class SOKOrderWebSocket {
             return;
         }
 
-        // ✅ Skip UI update while wizard/addon modal is open
-        const addonModal = document.getElementById('addonModal');
-        if (addonModal?.classList.contains('show')) {
-            console.log('⏭️ updateUIImmediate skipped — addon modal is open');
-            return;
-        }
 
         const salesDtls = orderData.sales_dtls || [];
         const itemCount = salesDtls.filter(i => i.s_no === i.parent_sno).length;
@@ -2225,13 +2189,13 @@ class SOKOrderWebSocket {
                 window.dispatchEvent(new Event('cartNeedsRender'));
             }
 
-            //if (typeof updateCartCount === "function") {
-            //    console.log("🎨 Calling updateCartCount()");
-            //    updateCartCount();
-            //} else if (typeof window.updateCartCount === "function") {
-            //    console.log("🎨 Calling window.updateCartCount()");
-            //    window.updateCartCount();
-            //}
+            if (typeof updateCartCount === "function") {
+                console.log("🎨 Calling updateCartCount()");
+                updateCartCount();
+            } else if (typeof window.updateCartCount === "function") {
+                console.log("🎨 Calling window.updateCartCount()");
+                window.updateCartCount();
+            }
         } catch (error) {
             console.error("❌ Error calling render functions:", error);
         }
@@ -2255,17 +2219,20 @@ class SOKOrderWebSocket {
         });
     }
 
-    clearOrderState(force = false) {
+    clearOrderState() {
         console.log("🧹 Clearing order state");
-        try {
-            const { order, setOrder, setLastSNo, clearOrder } = useOrder();
 
-            // ✅ Respect force flag
-            if (!force && order?.sales_dtls?.length > 0) {
+        try {
+            const { order } = useOrder();
+
+            // ✅ Only guard against clearing if not forced
+            if (order && order.sales_dtls && order.sales_dtls.length > 0) {
                 console.warn(`⚠️ Prevented clearing cart with ${order.sales_dtls.length} items`);
+                console.log("💡 If you need to force clear, use clearOrderState(true)");
                 return;
             }
 
+            const { setOrder, setLastSNo, clearOrder } = useOrder();
             const emptyOrder = {
                 sales_dtls: [],
                 sub_total: "0.00",
@@ -2275,16 +2242,21 @@ class SOKOrderWebSocket {
             };
 
             if (typeof clearOrder === "function") {
+                console.log("🧹 Calling clearOrder()");
                 clearOrder();
             } else {
+                console.log("🧹 Setting empty order");
                 setOrder(emptyOrder);
                 setLastSNo(0);
             }
 
             localStorage.removeItem("order");
             localStorage.removeItem("currentOrder");
+
             this.updateUIImmediate(emptyOrder);
+
             window.dispatchEvent(new CustomEvent('orderCleared'));
+
             console.log("✅ Order state cleared successfully");
         } catch (error) {
             console.error("❌ Error clearing state:", error);
@@ -2739,7 +2711,7 @@ document.addEventListener("visibilitychange", async () => {
 
     } catch (error) {
         console.error("❌ Error in visibility recovery:", error);
-
+    
     }
 });
 
@@ -2771,12 +2743,6 @@ window.addEventListener("focus", async () => {
         // ← ADD THIS
         if (window._blockWSSync) {
             console.log("⏸️ Focus sync blocked — addToCart in progress");
-            return;
-        }
-
-        const addonModal = document.getElementById('addonModal');
-        if (addonModal?.classList.contains('show') || window.modalState?.addonOpen) {
-            console.log('⏭️ Focus sync skipped — modal is open');
             return;
         }
 

@@ -822,29 +822,36 @@ async function applyItemVoucher(order, voucherInfo) {
 // APPLY VOUCHER (dispatcher)
 // ============================================
 // ✅ Tax patch helper — applied after voucher discount to zero/prorate tax on discounted lines
+/**
+ * After discounts, RESTORE line tax to its gross-price value.
+ * Business rule (Han's): inclusive GST is shown on the original item price
+ * and does not change when vouchers/bill discounts apply.
+ * (calcOrderAmt may have zeroed/reduced tax_amt based on disc_amt — undo that.)
+ */
 function patchTaxAfterDiscount(order) {
     const shouldAbsorb = order.absorb_tax === 'Y';
+    const defaultRate = parseFloat(sessionStorage.getItem('GST')) || 9;
 
     const patchedSalesDtls = (order.sales_dtls || []).map(i => {
         const subTotal = parseFloat(i.sub_total || 0);
-        const proDiscAmt = parseFloat(i.pro_disc_amt || 0);
-        const netChargeable = Math.max(0, subTotal - proDiscAmt);
-        const originalTax = parseFloat(i.tax_amt || 0);
+        if (subTotal === 0) return i;                          // unpriced rows untouched
 
-        if (originalTax === 0 || subTotal === 0) return i;
-        if (netChargeable === 0) return { ...i, tax_amt: '0.000000' };
+        const taxRate = parseFloat(i.tax_rate || i.tax_value || 0) || defaultRate;
+        if (taxRate === 0) return { ...i, tax_amt: '0.000000' };  // genuinely exempt
 
-        const proratedTax = originalTax * (netChargeable / subTotal);
-        return { ...i, tax_amt: proratedTax.toFixed(6) };
+        // ✅ GROSS-based tax — ignore disc_amt / pro_disc_amt entirely
+        const taxAmt = shouldAbsorb
+            ? subTotal * taxRate / (100 + taxRate)             // 5.80 × 9/109 = 0.4789
+            : subTotal * taxRate / 100;
+
+        return { ...i, tax_amt: taxAmt.toFixed(6) };
     });
 
-    const totalTax = patchedSalesDtls.reduce(
-        (sum, i) => sum + parseFloat(i.tax_amt || 0), 0
-    );
+    const totalTax = patchedSalesDtls.reduce((s, i) => s + parseFloat(i.tax_amt || 0), 0);
 
-    // Absorb tax is included in sub_total — don't add it again
-    const netAmt = Math.max(
-        0,
+    // net_amt still reflects what the customer pays (discounts subtracted);
+    // absorbed tax is informational inside that amount, not added on top
+    const netAmt = Math.max(0,
         parseFloat(order.sub_total || 0)
         - parseFloat(order.total_disc || 0)
         + (shouldAbsorb ? 0 : totalTax)
@@ -852,10 +859,8 @@ function patchTaxAfterDiscount(order) {
     );
 
     return {
-        ...order,
-        sales_dtls: patchedSalesDtls,
-        total_tax: totalTax.toFixed(2),
-        net_amt: netAmt.toFixed(2),
+        ...order, sales_dtls: patchedSalesDtls,
+        total_tax: totalTax.toFixed(2), net_amt: netAmt.toFixed(2)
     };
 }
 

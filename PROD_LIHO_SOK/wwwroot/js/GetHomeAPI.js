@@ -730,7 +730,7 @@ function setBootStatus(message) {
 function dismissBootLoader() {
     const loader = document.getElementById('kioskBootLoader');
     if (!loader) return;
-    loader.style.opacity = '0';
+    loader.style.opacity = '0'; 
     loader.style.pointerEvents = 'none';
     setTimeout(() => loader.remove(), 450);
     console.log('✅ [Boot] Loader dismissed');
@@ -853,6 +853,8 @@ async function initializeApp() {
                 sessionStorage.setItem('skip_api_on_load', 'true');
                 if (!localStorage.getItem('orderType')) localStorage.setItem('orderType', 'E');
 
+                await loadStoreDetails();
+
                 // ✅ 1. Initial fall-back build from cache
                 buildItemAvlMapFromLocalStorage();
 
@@ -959,7 +961,7 @@ function validateOutletStatus(statusData) {
     }
 }
 
-function hexToHSL(hex) {
+function hexToHSL(hex) { 
     if (!hex || typeof hex !== 'string') return { h: 0, s: 0, l: 0 };
     hex = hex.replace('#', '');
     if (!/^[0-9A-Fa-f]{6}$/.test(hex)) return { h: 0, s: 0, l: 0 };

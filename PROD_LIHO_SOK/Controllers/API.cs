@@ -1156,6 +1156,13 @@ public class KIOSKController : Controller
         // Extract action
         string action = orders[0]["action"]?.ToString() ?? "create";
 
+
+        string storeNameFromPayload = (orders[0]["store_name"]?.ToString()
+            ?? orders[0]["storename"]?.ToString())?.Trim().ToLower();
+
+        if (string.IsNullOrWhiteSpace(storeNameFromPayload))
+            _logger.LogWarning("SendPostCartItem — no store_name in payload, will fall back to cache");
+
         // Force print_flag = Y on all sales_dtls
         foreach (var order in orders)
         {
@@ -1166,7 +1173,8 @@ public class KIOSKController : Controller
         }
 
         // Post to POS
-        var cartResult = await PostCartItem(action, orders.Cast<object>().ToList());
+        var cartResult = await PostCartItem(action, orders.Cast<object>().ToList(), storeNameFromPayload);
+
 
         if (string.IsNullOrWhiteSpace(cartResult) || cartResult.StartsWith("Error") || cartResult.StartsWith("Exception"))
         {
@@ -1343,10 +1351,9 @@ public class KIOSKController : Controller
 
 
 
-    private async Task<string> PostCartItem(string action, List<object> orders)
+    private async Task<string> PostCartItem(string action, List<object> orders, string storeNameOverride = null)
     {
         _logger.LogInformation("PostCartItem started with action: {Action}", action);
-
         try
         {
             // Get session ID
@@ -1371,14 +1378,27 @@ public class KIOSKController : Controller
             }
 
             // Store name
-            var storeName = _storeName ?? _memoryCache.Get<string>("STORE_NAME");
+            var storeName = !string.IsNullOrWhiteSpace(storeNameOverride)
+               ? storeNameOverride
+               : (_storeName ?? _memoryCache.Get<string>("STORE_NAME"));
+
             if (string.IsNullOrWhiteSpace(storeName))
             {
                 _logger.LogError("Store name not set or empty");
+
+                _logger.LogError("Store name not set — override:'{Override}', field:'{Field}', cache:'{Cache}'",
+                    storeNameOverride, _storeName, _memoryCache.Get<string>("STORE_NAME"));
                 return "Error: Store name not set";
             }
 
             _logger.LogInformation("Store name: {StoreName}, Action: {Action}", storeName, action);
+
+            // ✅ Self-heal: repopulate the cache so downstream calls (print, shift, stocks) work
+            if (string.IsNullOrWhiteSpace(_memoryCache.Get<string>("STORE_NAME")))
+            {
+                _memoryCache.Set("STORE_NAME", storeName);
+                _logger.LogInformation("STORE_NAME repopulated from payload: {StoreName}", storeName);
+            }
 
             // Step 1: Serialize the orders array to a JSON string
             var ordersJson = JsonConvert.SerializeObject(orders, new JsonSerializerSettings
