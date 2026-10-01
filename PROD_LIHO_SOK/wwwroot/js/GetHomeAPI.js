@@ -521,6 +521,22 @@ export async function loadStoreDetails() {
     }, { isCritical: true, allowEmpty: false });
 }
 
+// ─── Guard: absorb_tax comes ONLY from GetStore (store.is_absorbtax). ────────
+export async function ensureStoreLoaded() {
+    const store = useCache()?.store;
+    if (store && store.is_absorbtax !== undefined && store.is_absorbtax !== null) {
+        return store;
+    }
+    console.warn('store.is_absorbtax missing from cache — forcing fresh GetStore fetch');
+    try {
+        await loadStoreDetails();
+    } catch (e) {
+        console.error('ensureStoreLoaded: GetStore fetch failed:', e);
+    }
+    return useCache()?.store;
+}
+
+
 // ─── FIX 2: loadMenuItems — sessionStorage persistence ───────────────────────
 // Survives page reloads and post-order landing returns.
 // apiManager resets on every page load (in-memory), but sessionStorage persists
@@ -730,7 +746,7 @@ function setBootStatus(message) {
 function dismissBootLoader() {
     const loader = document.getElementById('kioskBootLoader');
     if (!loader) return;
-    loader.style.opacity = '0'; 
+    loader.style.opacity = '0';
     loader.style.pointerEvents = 'none';
     setTimeout(() => loader.remove(), 450);
     console.log('✅ [Boot] Loader dismissed');
@@ -773,13 +789,15 @@ function rehydrateCacheStoreFromApiManager() {
 async function initializeApp() {
     setBootStatus('Starting up…');
 
+    const isStartOver = localStorage.getItem('pos_start_over') === 'true' || sessionStorage.getItem('pos_start_over') === 'true';
+
     let restoredCount = 0;
     if (typeof window.restoreCacheAfterReload === 'function') {
         restoredCount = window.restoreCacheAfterReload();
     }
     if (restoredCount > 0) rehydrateCacheFromApiManager();
 
-    const isStartOver = localStorage.getItem('pos_start_over') === 'true';
+    //const isStartOver = localStorage.getItem('pos_start_over') === 'true';
     const sessionWarm = sessionStorage.getItem('skip_api_on_load') === 'true';
     let isWarm = (restoredCount > 0) || isStartOver || sessionWarm;
 
@@ -961,7 +979,7 @@ function validateOutletStatus(statusData) {
     }
 }
 
-function hexToHSL(hex) { 
+function hexToHSL(hex) {
     if (!hex || typeof hex !== 'string') return { h: 0, s: 0, l: 0 };
     hex = hex.replace('#', '');
     if (!/^[0-9A-Fa-f]{6}$/.test(hex)) return { h: 0, s: 0, l: 0 };
@@ -1206,6 +1224,11 @@ export async function selectOrderType(type, language = 'en') {
         const service_type_info = SERVICE_TYPES
             ?.find(item => item?.service_type === service_type)
             ?.service_type_info;
+
+        // Guarantee store.is_absorbtax is actually loaded (forces a fresh
+        // GetStore fetch on warm boot if the cache restore missed it) before
+        // it's used to compute the order's tax-absorb flag.
+        await ensureStoreLoaded();
 
         // isAbsorbTax reads window._pendingOrderType as fallback when
         // activeOrder.service_type and localStorage are not yet set
@@ -9208,7 +9231,7 @@ GetHomeAPI.editItem = function (sno, item_no) {
     const editCallback = (chosenAddons, chosenRemarks) => {
         // ✅ Set BEFORE addToCart so it survives async operations
         window.currentEditingSno = sno;
-    
+
         addToCart(
             fullItemData.item_no,
             chosenAddons || [],
@@ -9216,7 +9239,7 @@ GetHomeAPI.editItem = function (sno, item_no) {
             sno,
             true
         );
-    
+
         // ✅ Re-set AFTER too as double guarantee
         window.currentEditingSno = sno;
     };

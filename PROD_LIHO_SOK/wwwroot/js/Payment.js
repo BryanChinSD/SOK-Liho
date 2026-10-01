@@ -108,7 +108,7 @@ const PAYMENT_CONFIG = {
             ],
             apiNames: ['CREDIT CARD', 'VISA', 'Mastercard'],
             fallback: { payment_type: 'R', payment_name: 'CREDIT CARD', terminaltype: 'nets-credit', is_direct_pay: 0, ref_3: '' }
-            //    fallback: { payment_type: 'R', payment_name: 'CREDIT CARD', terminaltype: 'UOB', is_direct_pay: 0, ref_3: '' }
+            //fallback: { payment_type: 'R', payment_name: 'CREDIT CARD', terminaltype: 'UOB', is_direct_pay: 0, ref_3: '' }
         },
         {
             enabled: true,
@@ -977,7 +977,7 @@ window.selectAndPay = async function (
     method,
     paymentType = null,
     isDirectPay = 1,
-    terminalType = 'nets-credit',
+    terminalType = '',
     ref3 = ''
 ) {
     if (isPaymentInProgress) { console.warn('⚠️ Payment already in progress'); return; }
@@ -1061,7 +1061,7 @@ window.selectAndPay = async function (
             await _processTender(method, paymentType, isDirectPay, terminalType, ref3, remainingAmount);
             return;
         }
-
+         
         promptPartialAmount(method, paymentType, isDirectPay, terminalType, ref3);
 
     } catch (error) {
@@ -1209,7 +1209,7 @@ async function completeOrder() {
                 clearCart();
                 window.location.reload();
             }, 3000);
-        } else {
+        } else { 
             throw new Error(result?.error || "Failed to save order");
         }
     } catch (err) {
@@ -1225,7 +1225,8 @@ async function _callCardTerminal(method, amount, terminalType) {
     window.isPaymentInProgress = true;
     showProcessingModal('💳', 'Processing Card Payment', 'Please present your card to the terminal');
     const orderType = localStorage.getItem('orderType') || "T";
-    const activeMethod = (terminalType === 'nets-credit') ? 'nets-credit' : method;
+    const activeMethod = terminalType
+    //const activeMethod = (terminalType === 'nets-credit') ? 'nets-credit' : method;
 
     let apiEndpoint;
     if (activeMethod.toLowerCase() === 'nets') {
@@ -1235,7 +1236,7 @@ async function _callCardTerminal(method, amount, terminalType) {
     } else if (terminalType === 'OCBC') {
         apiEndpoint = '/API/Payment/ocbc';
     } else {
-        apiEndpoint = '/API/Payment/nets-credit';
+        apiEndpoint = '/API/Payment/nets-credit';     
     }
 
     sendTerminalCheckStartedNotification(activeMethod, amount);
@@ -1249,7 +1250,7 @@ async function _callCardTerminal(method, amount, terminalType) {
             signal: currentPaymentController.signal,
             body: JSON.stringify({
                 payment: { tenderAmt: parseFloat(amount), paymentName: activeMethod, sNo: 0, refInfo: "NA" },
-                oldECN: ""
+                oldECN: ""  
             })
         });
         clearTimeout(timeoutId);
@@ -1276,12 +1277,12 @@ async function _callCardTerminal(method, amount, terminalType) {
                 userMessage = 'Terminal communication error. Please check the terminal.';
             } else {
                 userMessage = rawMessage || `Terminal error (${response.status})`;
-            }
+            }  
 
             throw new Error(userMessage);
-        }
+        }      
 
-        const hwData = result.Result || result.result || result;
+        const hwData = result.Result || result.result || result; 
         const isSuccessful =
             hwData.responseCode === "00" ||
             hwData.ResponceCode === "00" ||

@@ -85,6 +85,7 @@ import { getPriceByServiceType, applyPromotions, getNewOrder, getNewOrderSOK, ad
 import { getNowInAPIFormat } from '../utils/common.js';
 import { showAddOnModal, showWizardModal, scrollModalToTop, MENU_CONFIG, setMenuRenderingMode } from './Home.js';
 import { renderCartFromOrder, showErrorModal, closeErrorModal, showSuccessModal, closeModal } from './renderCartFromOrder.js';
+import { clearLocalImageCache } from './ImageCache.js'; // adjust path
 
 // ─── SESSION STORAGE KEY ──────────────────────────────────────────────────────
 // Single key for menu persistence across page reloads and post-order returns.
@@ -106,6 +107,7 @@ let serviceRate = parseFloat(sessionStorage.getItem("ServiceCharge"));
 const selectedLang = sessionStorage.getItem("selectedLang");
 const orderType = localStorage.getItem("orderType");
 window.__isReload = performance.getEntriesByType("navigation")[0]?.type === "reload";
+
 
 // ─── FIX 1: Pre-parse AvailablePOSMenuItems ONCE at startup ──────────────────
 // Previously parsed inside shouldShowItem() on every single item call.
@@ -578,6 +580,7 @@ export async function loadMenuItems() {
 export function invalidateMenuCache() {
     sessionStorage.removeItem(MENU_CACHE_KEY);
     apiManager.clearCache('menuItems');
+    clearLocalImageCache();
     console.log('🗑️ Menu cache invalidated');
 }
 
@@ -727,7 +730,7 @@ function setBootStatus(message) {
 function dismissBootLoader() {
     const loader = document.getElementById('kioskBootLoader');
     if (!loader) return;
-    loader.style.opacity = '0';
+    loader.style.opacity = '0'; 
     loader.style.pointerEvents = 'none';
     setTimeout(() => loader.remove(), 450);
     console.log('✅ [Boot] Loader dismissed');
@@ -850,6 +853,8 @@ async function initializeApp() {
                 sessionStorage.setItem('skip_api_on_load', 'true');
                 if (!localStorage.getItem('orderType')) localStorage.setItem('orderType', 'E');
 
+                await loadStoreDetails();
+
                 // ✅ 1. Initial fall-back build from cache
                 buildItemAvlMapFromLocalStorage();
 
@@ -956,7 +961,7 @@ function validateOutletStatus(statusData) {
     }
 }
 
-function hexToHSL(hex) {
+function hexToHSL(hex) { 
     if (!hex || typeof hex !== 'string') return { h: 0, s: 0, l: 0 };
     hex = hex.replace('#', '');
     if (!/^[0-9A-Fa-f]{6}$/.test(hex)) return { h: 0, s: 0, l: 0 };
@@ -1745,7 +1750,13 @@ async function _doLoadAndRenderMenu(category, language) {
         });
 
         window.menuGridItems = enrichedItems;
-
+        requestIdleCallback?.(() => {
+            enrichedItems.forEach(item => {
+                const url = toProxyUrl(item.tqr_image_url || item.item_image || item.image);
+                if (url) poolImage(url);
+            });
+            console.log(`🖼️ Image pool warmed: ${_decodedImagePool.size} images`);
+        }, { timeout: 5000 });
         // ── POST-ENRICHMENT: Preload first 18 item images ─────────────────────
         // tqr_image_url comes from FullItems — must run after enrichment.
         // 18 = 2 full rows of 3 columns × 3 visible rows on kiosk viewport.
@@ -3368,6 +3379,53 @@ function menuGridClickHandler(e) {
     openItemModal(fullItem, imageUrl, displayPrice, fullItem.category_code || '');
 }
 
+
+const _decodedImagePool = new Map();
+const DECODED_POOL_MAX = 400; // ~400 menu images max
+
+function poolImage(url) {
+    if (!url || _decodedImagePool.has(url)) return;
+    if (_decodedImagePool.size >= DECODED_POOL_MAX) {
+        // Evict oldest entry
+        const firstKey = _decodedImagePool.keys().next().value;
+        _decodedImagePool.delete(firstKey);
+    }
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    img.decode?.().catch(() => { });
+    _decodedImagePool.set(url, img);
+}
+
+/**
+ * After a grid render, replace each <img> with its pooled twin (already
+ * downloaded + decoded). Pooled images render instantly with no request.
+ * Non-pooled images are added to the pool for next time.
+ */
+function swapInPooledImages(container) {
+    container.querySelectorAll('.menu-item .item-image img').forEach(img => {
+        const url = img.src;
+        if (!url) return;
+        const pooled = _decodedImagePool.get(url);
+        if (pooled && pooled.complete && pooled.naturalWidth > 0) {
+            // Clone attributes/styles onto the pooled node and swap
+            const clone = pooled.cloneNode();
+            clone.alt = img.alt;
+            clone.className = img.className + ' loaded';
+            clone.style.cssText = img.style.cssText;
+            clone.style.opacity = '1';
+            img.replaceWith(clone);
+        } else {
+            // First sighting — pool it once it finishes loading
+            if (img.complete && img.naturalWidth > 0) {
+                _decodedImagePool.set(url, img.cloneNode());
+            } else {
+                img.addEventListener('load', () => poolImage(url), { once: true });
+            }
+        }
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RENDER MENU GRID  (Workflow variant)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3774,6 +3832,7 @@ async function renderCategoryByCodeWorkFlow(categoryCode, selectedLanguage = '')
         container.appendChild(sectionEl);
 
         if (typeof renderMenuGrid === 'function') await renderMenuGrid(itemsToRender);
+        swapInPooledImages(container);
         currentRenderController = null;
 
     } catch (error) {
@@ -7320,7 +7379,38 @@ export function getRemarksCache() {
 }
 
 // Add once at top of the file, outside the function
-const _imageUrlCache = new Map();
+// ─── Persistent image URL cache ──────────────────────────────────────────────
+const IMAGE_URL_CACHE_KEY = 'sok_image_url_cache';
+const IMAGE_URL_CACHE_TTL = 30 * 60 * 1000; // match menu cache TTL
+
+const _imageUrlCache = (() => {
+    try {
+        const raw = sessionStorage.getItem(IMAGE_URL_CACHE_KEY);
+        if (raw) {
+            const { entries, ts } = JSON.parse(raw);
+            if (Date.now() - ts < IMAGE_URL_CACHE_TTL && Array.isArray(entries)) {
+                console.log(`⚡ Image URL cache restored: ${entries.length} entries`);
+                return new Map(entries);
+            }
+        }
+    } catch (e) { /* corrupt cache — start fresh */ }
+    return new Map();
+})();
+
+// Debounced write-back so we don't hammer sessionStorage on every lookup
+let _imgCachePersistTimer = null;
+function persistImageUrlCache() {
+    clearTimeout(_imgCachePersistTimer);
+    _imgCachePersistTimer = setTimeout(() => {
+        try {
+            sessionStorage.setItem(IMAGE_URL_CACHE_KEY, JSON.stringify({
+                entries: Array.from(_imageUrlCache.entries()),
+                ts: Date.now()
+            }));
+        } catch (e) { /* quota — non-fatal */ }
+    }, 500);
+}
+
 let _menuItemsIndex = null; // pre-built lookup index
 let _fullItemsIndex = null;
 
@@ -7405,7 +7495,26 @@ export function getItemImageUrl(item) {
 
     // ✅ Cache result for all future calls
     _imageUrlCache.set(item.item_no, imageUrl);
+    persistImageUrlCache();
     return imageUrl;
+}
+
+
+const IMAGE_DOMAIN_KEY = 'sok_image_domain';
+
+function getImageDomainConfig() {
+    if (window._imgDomainCfg) return window._imgDomainCfg;
+    try {
+        const raw = sessionStorage.getItem(IMAGE_DOMAIN_KEY);
+        if (raw) return (window._imgDomainCfg = JSON.parse(raw));
+    } catch { }
+    const cfg = {
+        base: RESTAURANT_CONFIG.baseImageUrl || '',
+        proxyPrefix: '/api/GetImageProxy?imageUrl=',
+        logo: RESTAURANT_CONFIG.logo || '/img/Logo.png'
+    };
+    sessionStorage.setItem(IMAGE_DOMAIN_KEY, JSON.stringify(cfg));
+    return (window._imgDomainCfg = cfg);
 }
 
 // Call this when menu data reloads to invalidate caches
@@ -7413,6 +7522,7 @@ export function clearImageUrlCache() {
     _imageUrlCache.clear();
     _menuItemsIndex = null;
     _fullItemsIndex = null;
+    sessionStorage.removeItem(IMAGE_URL_CACHE_KEY);
 }
 /**
 * Helper function to determine temperature from item name
